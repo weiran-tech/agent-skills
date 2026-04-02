@@ -6,24 +6,16 @@ npx skills add weiran-tech/agent-skills --skill nuxt3-qa-analysis
 
 ## 清单说明
 
-Nuxt / 前端
-
-| 技能 | 描述 |
-| --- | --- |
+```
+# Nuxt / 前端
 | nuxt3-qa-analysis | Nuxt3 项目分析 |
 
-Weiran 框架
-
-| 技能 | 描述 |
-| --- | --- |
+# Weiran 框架
 | weiran-openapi-writer | OpenAPI 文档写作 |
 | weiran-project-qa-analysis | 项目分析 |
 
-虚位以待...
-
-| 技能 | 描述 |
-| --- | --- |
-| ... | ... |
+# 其他
+```
 
 ## 开发
 
