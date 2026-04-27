@@ -34,3 +34,7 @@ build/
 **/.omc
 .claude/settings.local.json
 .claude/*
+
+
+### CACHE ###
+__pycache__/
