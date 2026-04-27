@@ -80,18 +80,17 @@ mcp__yunxiao__search_workitems(
   spaceId="<space_id>",
   spaceType="Project",
   category="Req",
-  sprint="<sprint_id>",
-  status="100005",
-  perPage=200
+  perPage=200,
+  advancedConditions={"conditionGroups":[[{"fieldIdentifier":"status","operator":"CONTAINS","value":["100005"],"className":"status","format":"list"},{"fieldIdentifier":"sprint","operator":"CONTAINS","value":["<sprint_id>"],"className":"sprint","format":"list"}]]}
 )
 ```
 
+**重要：必须使用 `advancedConditions` 同时筛选迭代和状态，不要使用第一层的 `status` 或 `sprint` 参数，不要从结果中过滤。**
+
 循环处理直到所有数据拉取完成。
 
-**Step 2.2 — 过滤并确认**
+**Step 2.2 — 确认评审数量**
 
-过滤出：
-- 状态为"待处理"（status.name == "待处理" 或 statusIdentifier == "100005"）
 - 忽略"评审结论"字段，即使已有 [AI] 评审标记也进行重新评审
 
 如果结果 > 10 条，先告知用户数量，询问是否全量处理。
