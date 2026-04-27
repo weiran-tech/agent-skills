@@ -1,0 +1,23 @@
+{
+  "skill_name": "yunxiao-ai-review",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "评审当前迭代的待处理需求",
+      "expected_output": "列出迭代选择 → 筛选待处理需求 → 逐条评审 → 输出统计报告",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "帮我 AI 评审一下迭代里状态是待处理的需求",
+      "expected_output": "触发评审流程，展示迭代选择 → 执行评审",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "自动评审所有待处理需求",
+      "expected_output": "项目/迭代选择 → 批量评审 → 输出驳回/待评审清单",
+      "files": []
+    }
+  ]
+}

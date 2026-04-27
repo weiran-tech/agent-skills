@@ -1,0 +1,79 @@
+{
+  "skill_name": "sentry-project-exception-output",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "获取 sentry 项目 kjs_* 异常事件大于 100 的，输出表格",
+      "expected_output": "输出以 kjs_ 开头项目的异常事件，数量>100，按数量降序排列的 Markdown 表格",
+      "assertions": [
+        {
+          "name": "包含正确表头",
+          "description": "表格应包含正确的表头列：项目、问题 ID、标题、数量、错误说明、优先级、链接",
+          "check": "regex"
+        },
+        {
+          "name": "表头分隔行正确",
+          "description": "表头分隔行必须是 |------|---------|------|------|---------|--------|------|",
+          "check": "exact"
+        },
+        {
+          "name": "按数量降序排列",
+          "description": "异常事件应按数量从高到低排列",
+          "check": "order"
+        },
+        {
+          "name": "数量大于等于阈值",
+          "description": "所有显示的异常事件数量应 >= 100",
+          "check": "threshold"
+        },
+        {
+          "name": "链接格式正确",
+          "description": "链接列应使用 [查看](url) 格式",
+          "check": "regex"
+        },
+        {
+          "name": "包含优先级列",
+          "description": "表格应包含优先级列，值为 high/medium/low",
+          "check": "regex"
+        }
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "获取 sentry 项目 kjs_product 和 kjs_kf 的异常事件，数量大于 500 的",
+      "expected_output": "输出 kjs_product 和 kjs_kf 两个项目的异常事件，数量>500，按数量降序排列的 Markdown 表格",
+      "assertions": [
+        {
+          "name": "只包含指定项目",
+          "description": "表格中只应出现 kjs_product 和 kjs_kf 两个项目",
+          "check": "filter"
+        },
+        {
+          "name": "数量大于等于阈值",
+          "description": "所有显示的异常事件数量应 >= 500",
+          "check": "threshold"
+        }
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "获取云商项目 yunshu_* 的 sentry 异常，数量大于 1000 的，标题用'云商异常统计'",
+      "expected_output": "输出以 yunshu_ 开头项目的异常事件，数量>1000，标题为'云商异常统计'的 Markdown 表格",
+      "assertions": [
+        {
+          "name": "自定义标题正确",
+          "description": "表格标题应为'云商异常统计'",
+          "check": "exact"
+        },
+        {
+          "name": "项目前缀正确",
+          "description": "表格中的项目应都是以 yunshu_ 开头",
+          "check": "filter"
+        }
+      ],
+      "files": []
+    }
+  ]
+}

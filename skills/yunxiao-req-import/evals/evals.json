@@ -1,0 +1,23 @@
+{
+  "skill_name": "yunxiao-import-requirements",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "使用 @docs/氪金兽.xlsx 这个文件，导入需求到云效",
+      "expected_output": "能够读取 Excel 文件，展示预览数据，并引导用户选择项目和迭代，最后创建工作项",
+      "files": ["@docs/氪金兽.xlsx"]
+    },
+    {
+      "id": 2,
+      "prompt": "批量导入 Excel 需求到云效项目",
+      "expected_output": "能够识别 Excel 文件路径，解析数据，展示导入预览并完成批量创建",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "从 xlsx 文件导入需求，只预览不创建",
+      "expected_output": "能够使用 dry_run 模式，只展示数据预览不实际创建工作项",
+      "files": []
+    }
+  ]
+}
