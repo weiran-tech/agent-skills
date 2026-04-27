@@ -21,7 +21,7 @@ description: AI 自动评审云效需求并生成评审意见。当用户提到"
 |----------|------|----------|
 | `mcp__yunxiao__search_projects` | 获取项目列表 | 无参数 |
 | `mcp__yunxiao__list_sprints` | 获取迭代列表 | `organizationId`, `id` |
-| `mcp__yunxiao__search_workitems` | 搜索需求列表 | `organizationId`, `spaceId`, `spaceType`, `category`, `sprint`, `status`, `perPage` |
+| `mcp__yunxiao__search_workitems` | 搜索需求列表 | `organizationId`, `spaceId`, `spaceType`, `category`, `perPage`, `advancedConditions` |
 | `mcp__yunxiao__get_work_item` | 获取单条需求详情 | `organizationId`, `workItemId` |
 | `mcp__yunxiao__create_work_item_comment` | 给需求添加评论 | `organizationId`, `workItemId`, `content` |
 | `mcp__yunxiao__update_work_item` | 更新需求状态/字段 | `organizationId`, `workItemId`, `updateWorkItemFields` |
@@ -81,11 +81,11 @@ mcp__yunxiao__search_workitems(
   spaceType="Project",
   category="Req",
   perPage=200,
-  advancedConditions={"conditionGroups":[[{"fieldIdentifier":"status","operator":"CONTAINS","value":["100005"],"className":"status","format":"list"},{"fieldIdentifier":"sprint","operator":"CONTAINS","value":["<sprint_id>"],"className":"sprint","format":"list"}]]}
+  advancedConditions='{"conditionGroups":[[{"fieldIdentifier":"status","operator":"CONTAINS","value":["100005"],"className":"status","format":"list"},{"fieldIdentifier":"sprint","operator":"CONTAINS","value":["<sprint_id>"],"className":"sprint","format":"list"}]]}'
 )
 ```
 
-**重要：必须使用 `advancedConditions` 同时筛选迭代和状态，不要使用第一层的 `status` 或 `sprint` 参数，不要从结果中过滤。**
+**重要：必须使用 `advancedConditions` 同时筛选迭代和状态，不要使用第一层的 `status` 或 `sprint` 参数，不要从结果中过滤。`advancedConditions` 必须是 JSON 字符串格式，不是 Python 对象。**
 
 循环处理直到所有数据拉取完成。
 
