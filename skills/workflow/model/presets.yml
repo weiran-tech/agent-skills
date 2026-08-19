@@ -1,0 +1,143 @@
+# ============================================================
+# workflow 预设（init 模板）— 唯一权威
+# 用途：configctl init --preset {name} 从 presets + docs 生成显式配置；
+#       运行时 policy/configctl 不读取本文件（配置全显式，无 profile 概念）
+# 结构：docs = 字段注释字典（生成 .workflow-config.yml 时逐路径注入，唯一注释来源）
+#       presets = 预设值模板（manual/guarded/autonomous）
+# 改字段语义只改 docs；改预设值只改 presets；configctl 无骨架/注释硬编码
+# 注意：preset 仅为 init 模板——烘焙成显式配置后修改无任何单调/信任档约束（配置即真相）
+# ============================================================
+version: 1
+name: workflow-presets
+
+docs:
+  mode: "仓库拓扑：single（单体多模块单仓）/ dual（规划仓+执行仓双仓）"
+  skills: "外部 skill 调用映射：workflow 按角色调用项目 skill（不同语言/项目可换用），缺省同内置默认"
+  skills.discuss: "阶段1 需求讨论 skill（默认 devops-discuss）"
+  skills.arch_rules: "项目规则与文档模板生成 skill（默认 arch-rules）"
+  skills.arch_analyzer: "架构文档分析 skill（默认 arch-analyzer）"
+  automation: "automation 自动化控制"
+  automation.advance_stage: "阶段完成自动推进"
+  automation.advance_task: "任务 DONE 后自动开始下一任务"
+  automation.advance_accept: "全部任务 DONE 后自动进入验收"
+  automation.advance_summary: "验收通过后自动收尾"
+  plan: "plan 复杂任务计划域"
+  plan.limits.retry_max: "plan 最大重试次数"
+  plan.capabilities.auto_validate: "plan 完成后自动完整性校验"
+  cr: "cr 代码审查域"
+  cr.limits.fix_max: "CR 最大修复轮数（达到后熔断）"
+  cr.capabilities.simple_skip_cr: "SIMPLE 任务（Gate 通过）跳过 CR"
+  cr.capabilities.recheck: "修复后是否二次审核（默认 true；false = 只审一次）"
+  cr.capabilities.minor_fix_auto_confirm: "纯 MINOR+IMPLEMENT_FIX 修复（带质量门证据）跳过二次审核直接确认；false = 所有修复都重审"
+  cr.levels: "按严重度（zero/minor/major）配置 CR 行为；implementation + judge 恒跑不可关闭"
+  cr.levels.zero.auto_confirm: "零问题 CR 自动确认"
+  cr.levels.minor.auto_fix: "MINOR 问题自动修复"
+  cr.levels.minor.recheck: "MINOR 修复重审额外审查维度（[] = 不额外跑）"
+  cr.levels.major.recheck: "MAJOR 修复重审额外审查维度（MAJOR 永不自动修复）"
+  cr.review: "项目审核维度池：审查在此池内取维度；implementation 恒跑，其余由池决定"
+  cr.review.dimensions: "审查维度池（默认四维，可缩减控速度）；命中风险标签但不在池内 → 跳过"
+  cr.quality.judge.min_confidence: "裁决置信度下限：低于下限或存在 UNCERTAIN → 人工门；全部 REJECTED 时只看 UNCERTAIN"
+  accept: "accept 收尾验收域"
+  accept.limits.fix_max: "验收自动修复最大轮数"
+  accept.capabilities.auto_fix: "验收问题自动修复"
+  rework: "rework 返工域"
+  rework.limits.design_max: "设计返工最大次数"
+  hotfix: "hotfix 轻量 bug 修复域（独立于任务流，无状态机）"
+  hotfix.capabilities.simple_skip_cr: "SIMPLE Gate 通过（含非空转回归测试证据）时跳过 hotfix 单维度 CR（默认 true）"
+
+presets:
+  manual:
+    description: 保守——所有可选流程等待人工推进或审批；CR 零问题也等人工
+    mode: single
+    skills:
+      discuss: devops-discuss
+      arch_rules: arch-rules
+      arch_analyzer: arch-analyzer
+    automation:
+      advance_stage: false
+      advance_task: false
+      advance_accept: false
+      advance_summary: false
+    plan:
+      limits: { retry_max: 2 }
+      capabilities: { auto_validate: false }
+    cr:
+      limits: { fix_max: 3 }
+      capabilities: { simple_skip_cr: false, recheck: true, minor_fix_auto_confirm: false }
+      levels:
+        zero: { auto_confirm: false }
+        minor: { auto_fix: false, recheck: [] }
+        major: { recheck: [design, security, performance] }
+      review: { dimensions: [implementation, design, security, performance] }
+      quality: { judge: { min_confidence: 0.85 } }
+    accept:
+      limits: { fix_max: 2 }
+      capabilities: { auto_fix: false }
+    rework:
+      limits: { design_max: 2 }
+    hotfix:
+      capabilities: { simple_skip_cr: true }
+
+  guarded:
+    description: 自动推进并跳过 SIMPLE CR；零问题 CR 自动确认；风险问题等待人工审批
+    mode: single
+    skills:
+      discuss: devops-discuss
+      arch_rules: arch-rules
+      arch_analyzer: arch-analyzer
+    automation:
+      advance_stage: true
+      advance_task: true
+      advance_accept: false
+      advance_summary: false
+    plan:
+      limits: { retry_max: 2 }
+      capabilities: { auto_validate: true }
+    cr:
+      limits: { fix_max: 3 }
+      capabilities: { simple_skip_cr: true, recheck: true, minor_fix_auto_confirm: true }
+      levels:
+        zero: { auto_confirm: true }
+        minor: { auto_fix: false, recheck: [] }
+        major: { recheck: [design, security, performance] }
+      review: { dimensions: [implementation, design, security, performance] }
+      quality: { judge: { min_confidence: 0.85 } }
+    accept:
+      limits: { fix_max: 2 }
+      capabilities: { auto_fix: true }
+    rework:
+      limits: { design_max: 2 }
+    hotfix:
+      capabilities: { simple_skip_cr: true }
+
+  autonomous:
+    description: 同 guarded，且 MINOR 实现问题自动修复 + 零阻塞 AUTONOMOUS_COMPLETED（生成交付清单）
+    mode: single
+    skills:
+      discuss: devops-discuss
+      arch_rules: arch-rules
+      arch_analyzer: arch-analyzer
+    automation:
+      advance_stage: true
+      advance_task: true
+      advance_accept: true
+      advance_summary: true
+    plan:
+      limits: { retry_max: 2 }
+      capabilities: { auto_validate: true }
+    cr:
+      limits: { fix_max: 3 }
+      capabilities: { simple_skip_cr: true, recheck: true, minor_fix_auto_confirm: true }
+      levels:
+        zero: { auto_confirm: true }
+        minor: { auto_fix: true, recheck: [] }
+        major: { recheck: [design, security, performance] }
+      review: { dimensions: [implementation, design, security, performance] }
+      quality: { judge: { min_confidence: 0.85 } }
+    accept:
+      limits: { fix_max: 2 }
+      capabilities: { auto_fix: true }
+    rework:
+      limits: { design_max: 2 }
+    hotfix:
+      capabilities: { simple_skip_cr: true }

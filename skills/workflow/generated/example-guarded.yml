@@ -1,0 +1,90 @@
+# GENERATED from model/presets.yml — 勿手改，改 presets.yml 后重新生成
+# workflow 配置 v2（字段注释见 model/presets.yml docs）
+version: 2
+
+# 仓库拓扑：single（单体多模块单仓）/ dual（规划仓+执行仓双仓）
+mode: single
+
+# 外部 skill 调用映射：workflow 按角色调用项目 skill（不同语言/项目可换用），缺省同内置默认
+skills:
+  # 阶段1 需求讨论 skill（默认 devops-discuss）
+  discuss: devops-discuss
+  # 项目规则与文档模板生成 skill（默认 arch-rules）
+  arch_rules: arch-rules
+  # 架构文档分析 skill（默认 arch-analyzer）
+  arch_analyzer: arch-analyzer
+
+# automation 自动化控制
+automation:
+  # 阶段完成自动推进
+  advance_stage: true
+  # 任务 DONE 后自动开始下一任务
+  advance_task: true
+  # 全部任务 DONE 后自动进入验收
+  advance_accept: false
+  # 验收通过后自动收尾
+  advance_summary: false
+
+# plan 复杂任务计划域
+plan:
+  limits:
+    # plan 最大重试次数
+    retry_max: 2
+  capabilities:
+    # plan 完成后自动完整性校验
+    auto_validate: true
+
+# cr 代码审查域
+cr:
+  limits:
+    # CR 最大修复轮数（达到后熔断）
+    fix_max: 3
+  capabilities:
+    # SIMPLE 任务（Gate 通过）跳过 CR
+    simple_skip_cr: true
+    # 修复后是否二次审核（默认 true；false = 只审一次）
+    recheck: true
+    # 纯 MINOR+IMPLEMENT_FIX 修复（带质量门证据）跳过二次审核直接确认；false = 所有修复都重审
+    minor_fix_auto_confirm: true
+  # 按严重度（zero/minor/major）配置 CR 行为；implementation + judge 恒跑不可关闭
+  levels:
+    zero:
+      # 零问题 CR 自动确认
+      auto_confirm: true
+    minor:
+      # MINOR 问题自动修复
+      auto_fix: false
+      # MINOR 修复重审额外审查维度（[] = 不额外跑）
+      recheck: []
+    major:
+      # MAJOR 修复重审额外审查维度（MAJOR 永不自动修复）
+      recheck: ['design', 'security', 'performance']
+  # 项目审核维度池：审查在此池内取维度；implementation 恒跑，其余由池决定
+  review:
+    # 审查维度池（默认四维，可缩减控速度）；命中风险标签但不在池内 → 跳过
+    dimensions: ['implementation', 'design', 'security', 'performance']
+  quality:
+    judge:
+      # 裁决置信度下限：低于下限或存在 UNCERTAIN → 人工门；全部 REJECTED 时只看 UNCERTAIN
+      min_confidence: 0.85
+
+# accept 收尾验收域
+accept:
+  limits:
+    # 验收自动修复最大轮数
+    fix_max: 2
+  capabilities:
+    # 验收问题自动修复
+    auto_fix: true
+
+# rework 返工域
+rework:
+  limits:
+    # 设计返工最大次数
+    design_max: 2
+
+# hotfix 轻量 bug 修复域（独立于任务流，无状态机）
+hotfix:
+  capabilities:
+    # SIMPLE Gate 通过（含非空转回归测试证据）时跳过 hotfix 单维度 CR（默认 true）
+    simple_skip_cr: true

@@ -1,0 +1,195 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "workflow/config.schema.json",
+  "title": "workflow 配置 Schema",
+  "description": ".workflow-config.yml 的严格 Schema（域优先：flow/cr/plan/accept/rework）。字段缺失、类型错误或存在未知字段时命令停止。",
+  "type": "object",
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "const": 2,
+      "description": "配置版本"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["single", "dual"],
+      "description": "仓库拓扑：single（默认，单体多模块单仓）/ dual（规划仓 + 执行仓双仓/多仓）"
+    },
+    "skills": {
+      "type": "object",
+      "description": "外部 skill 调用映射：workflow 按角色调用项目提供的 skill，不同语言/项目可换用各自 skill；缺省用内置默认",
+      "properties": {
+        "discuss": { "type": "string", "description": "阶段1 需求讨论 skill（默认 devops-discuss）" },
+        "arch_rules": { "type": "string", "description": "项目规则与文档模板生成 skill（默认 arch-rules）" },
+        "arch_analyzer": { "type": "string", "description": "架构文档分析 skill（默认 arch-analyzer）" }
+      },
+      "additionalProperties": false
+    },
+    "automation": {
+      "type": "object",
+      "description": "自动化控制：什么自动推进、什么等人工（四档推进深度统一 advance_ 前缀）",
+      "properties": {
+        "advance_stage": { "type": "boolean", "description": "阶段完成自动推进" },
+        "advance_task": { "type": "boolean", "description": "任务 DONE 后自动开始下一依赖就绪任务" },
+        "advance_accept": { "type": "boolean", "description": "全部任务 DONE 后自动进入验收阶段" },
+        "advance_summary": { "type": "boolean", "description": "验收通过后自动收尾完成" }
+      },
+      "additionalProperties": false
+    },
+    "cr": {
+      "type": "object",
+      "description": "CR 域",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "fix_max": { "type": "integer", "minimum": 1, "maximum": 10 }
+          },
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "simple_skip_cr": { "type": "boolean" },
+            "recheck": { "type": "boolean", "description": "修复后是否二次审核（默认 true；false = 只审核一次，修复后直接 CR_PASSED 进复验）" },
+            "minor_fix_auto_confirm": { "type": "boolean", "description": "纯 MINOR+IMPLEMENT_FIX 修复且带质量门证据时跳过二次审核直接确认（默认 true；false = 所有修复都重审）" }
+          },
+          "additionalProperties": false
+        },
+        "levels": {
+          "type": "object",
+          "description": "按严重度的 CR 行为；implementation + judge 恒跑为 P4 固定安全",
+          "properties": {
+            "zero": {
+              "type": "object",
+              "description": "零问题：auto_confirm（无修复 → 无 recheck）",
+              "properties": {
+                "auto_confirm": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            "minor": {
+              "type": "object",
+              "properties": {
+                "auto_fix": { "type": "boolean" },
+                "recheck": {
+                  "type": "array",
+                  "items": { "enum": ["design", "security", "performance"] }
+                }
+              },
+              "additionalProperties": false
+            },
+            "major": {
+              "type": "object",
+              "properties": {
+                "recheck": {
+                  "type": "array",
+                  "items": { "enum": ["design", "security", "performance"] }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "judge": {
+              "type": "object",
+              "properties": {
+                "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "review": {
+          "type": "object",
+          "description": "项目审核维度池：首审与重审都在此池内取维度，默认 = 全部四维",
+          "properties": {
+            "dimensions": {
+              "type": "array",
+              "description": "本项目关心的审查角度；IMPLEMENTATION 恒跑固定，池决定 DESIGN/SECURITY/PERFORMANCE 是否派发",
+              "items": { "enum": ["implementation", "design", "security", "performance"] }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "plan": {
+      "type": "object",
+      "description": "Plan 域（复杂任务）",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "retry_max": { "type": "integer", "minimum": 0, "maximum": 10 }
+          },
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "auto_validate": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "accept": {
+      "type": "object",
+      "description": "Accept 域（收尾验收）",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "fix_max": { "type": "integer", "minimum": 0, "maximum": 10 }
+          },
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "auto_fix": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "rework": {
+      "type": "object",
+      "description": "Rework 域（返工）",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "design_max": { "type": "integer", "minimum": 0, "maximum": 10 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "hotfix": {
+      "type": "object",
+      "description": "Hotfix 域（轻量 bug 修复；独立于任务流，无状态机）",
+      "properties": {
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "simple_skip_cr": { "type": "boolean", "description": "SIMPLE Gate 通过（含非空转回归测试证据）时跳过 hotfix 单维度 CR（默认 true）" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

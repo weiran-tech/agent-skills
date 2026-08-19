@@ -1,0 +1,315 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "workflow/events.schema.json",
+  "title": "workflow 事件 payload Schema",
+  "description": "每个事件提交 payload 的唯一契约。statectl 提交事件时按此校验；Stage 不得通过固定示例或自由文本传递关键数据。验收事件必须携带报告完整性、严重度统计、结构化根因层级与修复批次。",
+  "type": "object",
+  "definitions": {
+    "complexity": {
+      "type": "string",
+      "enum": ["SIMPLE", "NORMAL", "COMPLEX"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["MAJOR", "MINOR"]
+    },
+    "root_cause_level": {
+      "type": "string",
+      "enum": ["IMPLEMENTATION", "DESIGN", "REQUIREMENT"]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["ACCEPTED", "REJECTED", "MODIFIED"]
+    },
+    "disposition": {
+      "type": "string",
+      "enum": ["IMPLEMENT_FIX", "BASELINE_ALIGN", "DESIGN_REWORK"]
+    },
+    "adjudication": {
+      "type": "object",
+      "required": ["issue_id", "verdict"],
+      "properties": {
+        "issue_id": { "type": "string" },
+        "verdict": { "$ref": "#/definitions/verdict" },
+        "disposition": { "$ref": "#/definitions/disposition" },
+        "note": { "type": "string" }
+      }
+    },
+    "simple_gate": {
+      "type": "object",
+      "required": [
+        "change_kind",
+        "changed_file_count",
+        "scope_check",
+        "tests",
+        "static_checks",
+        "diff_integrity",
+        "risk_signals",
+        "evidence_path"
+      ],
+      "properties": {
+        "change_kind": {
+          "type": "string",
+          "enum": ["CODE", "DOCS_ONLY", "TESTS_ONLY", "TESTS_DOCS"],
+          "description": "从实际 diff 文件清单推导的变更类型（证据推导，不采信自述）：CODE=含生产代码；DOCS_ONLY=全部为文档（docs/、*.md）；TESTS_ONLY=全部为测试（tests/、testing/、*Test）；TESTS_DOCS=仅含测试+文档、无生产代码。DOCS_ONLY/TESTS_ONLY/TESTS_DOCS 无生产代码，文件数不限（仅 CODE 限 2，阈值见 model/policy.yml#simple_gate.max_files）；risk_signals 仍独立把关"
+        },
+        "changed_file_count": { "type": "integer", "minimum": 1, "maximum": 200, "description": "实际 diff 去重文件数（宽松结构硬上限，给足余量；仅 CODE 在 policy 收紧到 2，test/doc 类型不限文件数）；lint 强制 schema 上限 ≥ policy 所有有限阈值" },
+        "scope_check": { "const": "PASS" },
+        "tests": { "const": "PASS" },
+        "static_checks": { "const": "PASS" },
+        "diff_integrity": { "const": "PASS" },
+        "risk_signals": { "type": "array", "items": { "type": "string" } },
+        "evidence_path": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "INIT_TASKS": {
+      "type": "object",
+      "description": "阶段4入口全量登记任务（statectl init-tasks；非状态机转换事件，仅审计登记）。首个任务离开 TODO 后禁止执行",
+      "additionalProperties": false
+    },
+    "STAGE_COMPLETED": {
+      "type": "object",
+      "properties": {
+        "stage": { "type": "integer", "minimum": 1, "maximum": 5 }
+      },
+      "additionalProperties": false
+    },
+    "DESIGN_APPROVED": {
+      "type": "object",
+      "description": "设计审核通过；dual 模式携带 mode: dual 分叉到 DISPATCHING",
+      "properties": {
+        "mode": { "enum": ["single", "dual"], "description": "仓库拓扑（默认按单仓处理）" }
+      },
+      "additionalProperties": false
+    },
+    "DISPATCH_COMPLETED": {
+      "type": "object",
+      "description": "全部执行单元下发完成（仅 dual：DISPATCHING → DEVELOPING）",
+      "additionalProperties": false
+    },
+    "DESIGN_REJECTED": {
+      "type": "object",
+      "required": ["gaps"],
+      "properties": {
+        "gaps": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "STAGE_BLOCKED": {
+      "type": "object",
+      "required": ["reason", "resume_event"],
+      "properties": {
+        "reason": { "type": "string" },
+        "resume_event": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "BLOCKER_RESOLVED": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "TASK_STARTED": {
+      "type": "object",
+      "required": ["complexity"],
+      "properties": {
+        "complexity": { "$ref": "#/definitions/complexity" }
+      },
+      "additionalProperties": false
+    },
+    "TASK_DOD_PASSED": {
+      "type": "object",
+      "required": ["complexity"],
+      "properties": {
+        "complexity": { "$ref": "#/definitions/complexity" },
+        "simple_gate": { "$ref": "#/definitions/simple_gate" }
+      },
+      "additionalProperties": false
+    },
+    "PLAN_READY": {
+      "type": "object",
+      "required": ["plan_path"],
+      "properties": {
+        "plan_path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "PLAN_VALIDATED": {
+      "type": "object",
+      "required": ["result"],
+      "properties": {
+        "result": { "type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "PLAN_APPROVED": {
+      "type": "object",
+      "required": ["contract_changed"],
+      "properties": {
+        "contract_changed": { "type": "boolean" },
+        "adjustments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": { "type": "string" },
+              "from": { "type": "string" },
+              "to": { "type": "string" }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CR_APPROVED": {
+      "type": "object",
+      "required": ["adjudications", "has_implement_fix"],
+      "properties": {
+        "adjudications": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/adjudication" }
+        },
+        "has_implement_fix": { "type": "boolean" },
+        "has_design_rework": { "type": "boolean" },
+        "has_baseline_align": { "type": "boolean", "description": "是否含 BASELINE_ALIGN 处置（实现+基线补记）；has_implement_fix=false 时经基线对齐转换进 CR_FIXING" },
+        "fix_contract_path": {
+          "type": "string",
+          "description": "修复契约文件路径；approve 进 CR_FIXING（has_implement_fix=true）前置"
+        },
+        "quality_gate_evidence": {
+          "type": "string",
+          "description": "客观质量门证据文件路径；approve 进 CR_PASSED（has_implement_fix=false）前置"
+        }
+      },
+      "additionalProperties": false
+    },
+    "REWRITE_COMPLETED": {
+      "type": "object",
+      "required": ["fixed_has_major", "fixed_has_baseline_align"],
+      "description": "修复改写完成。决策：skip_recheck（全局）或纯 MINOR+IMPLEMENT_FIX 且带 quality_gate_evidence → CONFIRM_CR；fixed_has_major/fixed_has_baseline_align=true → 强制 CR_RECHECK。fixed_has_* 为必填，由主 Agent 从已批准裁决（CR_APPROVED adjudications）计算，不是重审结论；漏填被 statectl 硬拒（防静默回退到恒重审）",
+      "properties": {
+        "fixed_has_major": { "type": "boolean", "description": "已修复问题中是否存在 MAJOR；true 时强制二次审核，不参与 minor 自动确认" },
+        "fixed_has_baseline_align": { "type": "boolean", "description": "已修复问题中是否存在 BASELINE_ALIGN 处置；true 时强制二次审核（基线对齐须重审复查基线 diff）" },
+        "quality_gate_evidence": { "type": "string", "description": "修复后质量门证据路径（minor 自动确认 / recheck=false 时必填，文件须存在）" }
+      },
+      "additionalProperties": false
+    },
+    "VERIFY_PASSED": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "VERIFY_FAILED": {
+      "type": "object",
+      "required": ["evidence", "is_fix_related", "cr_round"],
+      "properties": {
+        "evidence": { "type": "string" },
+        "is_fix_related": {
+          "type": "boolean",
+          "description": "确定性判定：dep(失败测试) ∩ 修复 diff ≠ ∅（依赖闭包，非主观）"
+        },
+        "cr_round": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "ACCEPTANCE_FAILED": {
+      "type": "object",
+      "required": [
+        "report_complete",
+        "major_count",
+        "minor_count",
+        "root_causes",
+        "fix_attempts"
+      ],
+      "properties": {
+        "report_complete": { "type": "boolean" },
+        "major_count": { "type": "integer", "minimum": 0 },
+        "minor_count": { "type": "integer", "minimum": 0 },
+        "root_causes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/root_cause_level" }
+        },
+        "fix_attempts": { "type": "integer", "minimum": 0 },
+        "acceptance_report_path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ACCEPTANCE_APPROVED": {
+      "type": "object",
+      "required": ["adjudications", "has_implement_fix"],
+      "properties": {
+        "adjudications": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/adjudication" }
+        },
+        "has_implement_fix": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "ACCEPTANCE_COMPLETED": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "CR_SCANNED": {
+      "type": "object",
+      "required": ["report_complete", "reviewer_count"],
+      "properties": {
+        "report_complete": { "type": "boolean" },
+        "reviewer_count": { "type": "integer", "minimum": 1 },
+        "unified_report_path": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "CR_JUDGED": {
+      "type": "object",
+      "required": ["accepted_count", "rejected_count", "uncertain_count", "min_confidence", "has_design_rework", "judge_report_path"],
+      "properties": {
+        "accepted_count": { "type": "integer", "minimum": 0 },
+        "rejected_count": { "type": "integer", "minimum": 0 },
+        "uncertain_count": { "type": "integer", "minimum": 0 },
+        "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "has_design_rework": { "type": "boolean" },
+        "has_baseline_align": { "type": "boolean", "description": "是否存在 BASELINE_ALIGN（实现+基线补记，不改契约值）处置；true 时走修复/人工门，不得零问题确认" },
+        "judge_report_path": { "type": "string", "description": "judge 裁决报告 judge.md 相对 {工单根} 路径；statectl 校验存在，主 Agent 向用户展示时必须首行回显该路径" },
+        "fix_contract_path": { "type": "string" },
+        "quality_gate_evidence": {
+          "type": "string",
+          "description": "客观质量门证据文件路径（模块测试/编译/scope 检查结果）；CR_PASSED 前置，Phase D 落地前记录已有确定性检查"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CR_RECHECKED": {
+      "type": "object",
+      "required": ["cr_round", "resolved_count", "new_issue_count", "regression_detected", "judge_report_path"],
+      "properties": {
+        "cr_round": { "type": "integer", "minimum": 0 },
+        "resolved_count": { "type": "integer", "minimum": 0 },
+        "new_issue_count": { "type": "integer", "minimum": 0 },
+        "regression_detected": { "type": "boolean" },
+        "judge_report_path": { "type": "string", "description": "重审判 judge.md 相对 {工单根} 路径；statectl 校验存在，主 Agent 展示摘要时首行回显该路径" },
+        "quality_gate_evidence": {
+          "type": "string",
+          "description": "客观质量门证据文件路径；重审判 clean（CONFIRM_CR → CR_PASSED）前置"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TASK_CR_PASSED": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "REWORK_STARTED": {
+      "type": "object",
+      "required": ["level", "affected_tasks"],
+      "properties": {
+        "level": { "$ref": "#/definitions/root_cause_level" },
+        "affected_tasks": { "type": "array", "items": { "type": "string" } },
+        "rework_id": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
