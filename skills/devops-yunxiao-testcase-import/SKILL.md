@@ -73,7 +73,7 @@ find report/*/testcase -name "*.json" -type f
 
 **Step 1.2 — 选择目标测试用例库**
 
-读取 `config/` 目录下所有 YAML 配置文件，提取所有项目的 `test_repos` 配置，合并为测试用例库列表。
+读取 `projects/<项目名>/config.yaml`，提取所有项目的 `test_repos` 配置，合并为测试用例库列表。
 
 使用 `AskUserQuestion` 让用户选择：
 

@@ -40,7 +40,7 @@ compatibility: Python 3.8+, uv
 ### Step 1: 读取配置文件
 
 使用 Read 工具读取项目配置文件：
-- `config/{项目名}.yaml` - 项目独立配置
+- `projects/{项目名}/config.yaml` - 项目独立配置(标准布局:`<仓库根>/projects/<项目名>/config.yaml`)
 - 根据类型读取默认配置项
 
 **配置过滤规则**：
@@ -94,7 +94,7 @@ compatibility: Python 3.8+, uv
 
 ### Step 3: 生成报告文件
 
-**输出目录**：`qa/{project}/{MM-DD-HH-MM}/`（不存在则自动创建，时间戳使用当前执行时间，精确到分钟）
+**输出目录**：`projects/{project}/QA/{MM-DD-HH-MM}/`（不存在则自动创建，时间戳使用当前执行时间，精确到分钟）
 
 **输出规则**：每种数据采集类型独立保存为一个 `.md` 文件
 
@@ -106,7 +106,7 @@ compatibility: Python 3.8+, uv
 | `高频接口.md`   | 接口高频统计（每个 name 一个小节）  |
 | `SQL慢日志.md`  | slow log 统计（每个 name 一个小节） |
 
-**文件名格式示例**：`qa/{project}/{MM-DD-HH-MM}/线上故障.md`
+**文件名格式示例**：`projects/{project}/QA/{MM-DD-HH-MM}/线上故障.md`
 
 **文件内容格式**：各文件仅包含对应类型的标题与数据，不合并其他类型。
 
@@ -150,7 +150,7 @@ compatibility: Python 3.8+, uv
 
 所有报告文件生成完毕后，在终端输出一个统一的汇总 Markdown 表格, 并将概览保存到：
 
-`qa/{project}/{MM-DD-HH-MM}/Summary.md`
+`projects/{project}/QA/{MM-DD-HH-MM}/Summary.md`
 
 
 
@@ -165,7 +165,7 @@ compatibility: Python 3.8+, uv
 | SLS 接口    | ✅    | www(216万PV) · api(360万调用)          |
 | SQL 慢日志  | ✅    | kjs-v3(4个SQLHash, TOP1 1.8s) · kjs-im |
 
-> 报告路径: qa/{project}/{MM-DD-HH-MM}/
+> 报告路径: projects/{project}/QA/{MM-DD-HH-MM}/
 > 总耗时: 6.5s | 成功: 5/5 | 跳过: 0 | 失败: 0
 ```
 
@@ -244,7 +244,14 @@ compatibility: Python 3.8+, uv
 
 ## 项目配置文件结构
 
-每个项目在 `config/` 目录下有独立的 YAML 配置文件：
+每个项目在 `projects/` 目录下有独立的子目录,内含 `config.yaml`：
+
+```
+projects/<项目名>/config.yaml
+projects/<项目名>/QA/<日期>/     # 日报历史落点
+projects/<项目名>/需求/          # 需求原始文档
+projects/<项目名>/看板/          # 周会看板截图
+```
 
 ```yaml
 name: 项目名称

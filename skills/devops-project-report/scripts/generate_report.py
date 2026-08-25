@@ -10,7 +10,11 @@ Project Daily Report Generator
 
 生成单个项目的日报报告，支持配置读取和文件输出。
 
-新架构：每个项目有独立的配置文件 config/{项目名}.yaml
+新架构：每个项目在仓库根目录下有独立目录 `projects/<项目名>/config.yaml`，
+脚本会在以下位置按顺序查找：
+  1. `--project-root` 入参指定的目录
+  2. 当前工作目录（含 `projects/<项目名>/` 的最近一级）
+  3. 脚本真实路径向上解析到仓库根（兼容未带参运行）
 """
 
 import os
@@ -21,9 +25,31 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 
+def _resolve_project_config_path(project_root: Path, project_name: str) -> Path:
+    """解析项目配置文件路径。
+
+    carry 仓的标准布局是 `<root>/projects/<项目名>/config.yaml`，
+    本函数集中这一映射，便于后续仓库重构时单点调整。
+    """
+    return project_root / 'projects' / project_name / 'config.yaml'
+
+
+def _find_project_root(start: Path) -> Path:
+    """从 start 向上找最近的含 `projects/` 子目录的目录。
+
+    这样无论从哪里运行脚本都能解析到正确的仓库根。在 duoli-weiran
+    仓内跑(没有 projects/)会回退到 cwd。
+    """
+    cur = start.resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / 'projects').is_dir():
+            return parent
+    return cur
+
+
 def load_project_config(project_root: Path, project_name: str) -> Optional[Dict[str, Any]]:
     """加载项目独立配置文件"""
-    config_path = project_root / 'config' / f'{project_name}.yaml'
+    config_path = _resolve_project_config_path(project_root, project_name)
     if not config_path.exists():
         return None
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -31,11 +57,15 @@ def load_project_config(project_root: Path, project_name: str) -> Optional[Dict[
 
 
 def list_available_projects(project_root: Path) -> List[str]:
-    """列出所有可用的项目配置"""
-    config_dir = project_root / 'config'
-    if not config_dir.exists():
+    """列出所有可用的项目配置(扫描 projects/<项目名>/config.yaml)"""
+    projects_dir = project_root / 'projects'
+    if not projects_dir.exists():
         return []
-    return [f.stem for f in config_dir.glob('*.yaml')]
+    result = []
+    for entry in sorted(projects_dir.iterdir()):
+        if entry.is_dir() and (entry / 'config.yaml').exists():
+            result.append(entry.name)
+    return result
 
 
 def get_sls_threshold(project_config: Dict[str, Any]) -> int:
@@ -162,10 +192,14 @@ def build_report_content(project_name: str,
 
 
 def ensure_output_dir(project_root: Path, project_name: str, ts: Optional[str] = None) -> Path:
-    """创建输出目录并返回目录路径。结构: qa/{project}/{MM-DD-HH-MM}/"""
+    """创建输出目录并返回目录路径。
+
+    结构: `<root>/projects/<项目名>/QA/<MM-DD-HH-MM>/`，与 carry 仓既定
+    `projects/<项目名>/QA/<日期>/` 落点保持一致(只把时间戳单独作为子目录)。
+    """
     if ts is None:
         ts = generate_timestamp()
-    output_dir = project_root / 'qa' / project_name / ts
+    output_dir = project_root / 'projects' / project_name / 'QA' / ts
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
@@ -185,16 +219,26 @@ def main():
     parser = argparse.ArgumentParser(description="项目日报生成器")
     parser.add_argument('--project', type=str, help='项目名称')
     parser.add_argument('--types', type=str, help='内容类型，逗号分隔 (bugs,req,sentry,sls)')
+    parser.add_argument(
+        '--project-root',
+        type=str,
+        default=None,
+        help='仓库根目录,内含 projects/<项目名>/config.yaml。默认从 CWD 向上查找包含 projects/ 的最近一级。',
+    )
     args = parser.parse_args()
 
-    # 代码库根目录
-    project_root = Path(__file__).parents[4]
+    # 默认从 cwd 向上找含 projects/ 的目录 — 这样在 carry 仓任何子目录跑都能解析对。
+    if args.project_root:
+        project_root = Path(args.project_root).resolve()
+    else:
+        project_root = _find_project_root(Path.cwd())
 
     if args.project:
         # 生成指定项目的报告
         config = load_project_config(project_root, args.project)
         if not config:
-            print(f"⚠️ 配置文件不存在: {project_root / 'config' / f'{args.project}.yaml'}")
+            missing = _resolve_project_config_path(project_root, args.project)
+            print(f"⚠️ 配置文件不存在: {missing}")
             return
 
         ts = generate_timestamp()
@@ -217,7 +261,7 @@ def main():
             filepath = write_report_file(output_dir, filename, content)
             print(f"  ✓ {filename}")
 
-        print(f"\n报告路径: qa/{args.project}/{ts}/")
+        print(f"\n报告路径: projects/{args.project}/QA/{ts}/")
     else:
         # 打印可用的项目列表
         projects = list_available_projects(project_root)

@@ -74,9 +74,9 @@ optimized: {
 
 **Step 1.1 — 选择测试用例库
 
-> 测试用例库从 `config/` 目录下项目配置文件中 `test_repos` 数组中读取，数组项包含 `repo_id` 和 `title` 字段。
+> 测试用例库从 `projects/<项目名>/config.yaml` 中 `test_repos` 数组中读取，数组项包含 `repo_id` 和 `title` 字段。所有项目在 `<仓库根>/projects/` 下并列。
 
-读取 `config/` 目录下所有 YAML 配置文件，提取所有项目的 `test_repos` 配置，合并为测试用例库列表，展示给用户选择：
+读取 `projects/<项目名>/config.yaml` 中所有项目配置，提取每个项目的 `test_repos` 配置，合并为测试用例库列表，展示给用户选择：
 
 以表格形式展示，只显示序号和用例库名称：
 
