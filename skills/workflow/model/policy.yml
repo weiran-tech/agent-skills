@@ -1,0 +1,182 @@
+# ============================================================
+# 策略模型 — 唯一权威
+# （Policy 纯判断）/ 事件契约 / plan 契约重审 / fs 固定安全规则
+# 使用方：engine/policy.py（resolve(event, payload, limits, quality, capabilities) -> Decision，纯判断无副作用）
+# 计数语义：fixAttempts 只被读取用于判断；递增由转换层（statectl）在 Decision=FIX_ACCEPTANCE_ISSUES 时执行
+# ============================================================
+version: 1
+name: workflow-policy
+
+# ---------- 事件决策矩阵（顺序判断，首中即返） ----------
+# when 语法：minimal predicate 表达式（engine/policy.py 实现的安全解析，非 eval）
+#   支持：true / payload.major_count > 0 / payload.complexity != SIMPLE /
+#         能力标志（advance_stage / advance_task / advance_accept / advance_summary /
+#         simple_skip_cr / skip_recheck / plan_auto_validate / accept_auto_fix /
+#         cr_zero_auto_confirm / cr_minor_auto_fix）/
+#         payload.root_causes has DESIGN / not <expr> / <expr> and|or <expr>
+# 能力标志 = 配置显式值（无 profile 运行时概念；preset 仅为 init 模板）
+decisions:
+  STAGE_COMPLETED:
+    - when: "not advance_stage"
+      decision: WAIT_NEXT_COMMAND
+    - when: "true"
+      decision: ADVANCE_WORKFLOW
+
+  TASK_DOD_PASSED:
+    - when: "payload.complexity != SIMPLE"
+      decision: RUN_CR
+    - when: "not payload.simple_gate_valid"
+      decision: RUN_CR
+    - when: "simple_skip_cr"
+      decision: SKIP_CR
+    - when: "true"
+      decision: RUN_CR
+
+  PLAN_READY:
+    - when: "not plan_auto_validate"
+      decision: WAIT_USER_APPROVAL
+    - when: "true"
+      decision: VALIDATE_PLAN
+
+  ACCEPTANCE_FAILED:
+    - when: "payload.root_causes has DESIGN or payload.root_causes has REQUIREMENT"
+      decision: REQUEST_DESIGN_REWORK
+    - when: "payload.fix_attempts >= limits.acceptance_fix_max"
+      decision: WAIT_USER_APPROVAL
+    - when: "accept_auto_fix"
+      decision: FIX_ACCEPTANCE_ISSUES
+    - when: "true"
+      decision: WAIT_USER_APPROVAL
+
+  ACCEPTANCE_COMPLETED:
+    - when: "advance_summary"
+      decision: GENERATE_SUMMARY
+    - when: "true"
+      decision: FINISH_ACCEPTANCE
+
+  CR_JUDGED:
+    # 顺序即优先级；严重度行为由配置 cr.levels（cr_zero_auto_confirm / cr_minor_auto_fix）决定
+    # 置信度语义：min_confidence = 已采纳问题(ACCEPTED+MODIFIED)置信度最小值。
+    #   - uncertain_count > 0（Judge 拿不准）→ 始终人工门，与 accepted_count 无关
+    #   - accepted_count > 0 且 min_confidence < 阈值 → 人工门（置信度保守但问题真实，可恢复）
+    #   - accepted_count == 0（全部 REJECTED，无已采纳问题）→ 无"最低置信度"可评估，跳过置信度门，
+    #     直接走零问题自动确认或人工门；min_confidence 在此场景不参与判断。
+    # AUTONOMOUS_BLOCK 仅保留给质量劣化/熔断等不可恢复场景（见 CR_RECHECKED / VERIFY_FAILED）。
+    # 处置三档：IMPLEMENT_FIX / BASELINE_ALIGN 均计入 accepted_count（BASELINE_ALIGN verdict=MODIFIED），
+    #   由 accepted_count>0 走修复/人工门，不触发 REQUEST_DESIGN_REWORK；仅 has_design_rework 触发 rework。
+    - when: "payload.uncertain_count > 0"
+      decision: WAIT_USER_APPROVAL
+    - when: "payload.accepted_count > 0 and payload.min_confidence < quality.judge_min_confidence"
+      decision: WAIT_USER_APPROVAL
+    - when: "payload.has_design_rework"
+      decision: REQUEST_DESIGN_REWORK
+    # fs-8：BASELINE_ALIGN 不得走零问题自动确认（verdict=MODIFIED 应 accepted_count≥1；矛盾态交人工门）
+    - when: "payload.has_baseline_align and payload.accepted_count == 0"
+      decision: WAIT_USER_APPROVAL
+    - when: "payload.accepted_count == 0 and cr_zero_auto_confirm"
+      decision: CONFIRM_CR
+    - when: "payload.accepted_count == 0"
+      decision: WAIT_USER_APPROVAL
+    - when: "cr_minor_auto_fix"
+      decision: FIX_CR_ISSUES
+    - when: "true"
+      decision: WAIT_USER_APPROVAL
+
+  CR_RECHECKED:
+    - when: "payload.regression_detected"
+      decision: AUTONOMOUS_BLOCK
+    - when: "payload.new_issue_count > 0 and payload.cr_round < limits.cr_fix_max"
+      decision: FIX_CR_ISSUES
+    - when: "payload.cr_round >= limits.cr_fix_max"
+      decision: AUTONOMOUS_BLOCK
+    - when: "true"
+      decision: CONFIRM_CR
+
+  REWRITE_COMPLETED:
+    # 修复后二次审核（cr.capabilities.recheck → 扁平 skip_recheck，默认 false）：
+    #   skip_recheck=true → 全局只审核一次，直接 CONFIRM_CR 进复验
+    #   fixed_has_baseline_align / fixed_has_major=true → 强制 CR_RECHECK（基线对齐/严重问题必重审）
+    #   minor_fix_auto_confirm + quality_gate_evidence → 纯 MINOR+IMPLEMENT_FIX 修复，复验即确认（跳重审）
+    #   其余（含 minor 自动确认但缺质量门证据）→ 保守进 CR_RECHECK
+    - when: "skip_recheck"
+      decision: CONFIRM_CR
+    - when: "payload.fixed_has_baseline_align"
+      decision: CR_RECHECK
+    - when: "payload.fixed_has_major"
+      decision: CR_RECHECK
+    - when: "minor_fix_auto_confirm and payload.quality_gate_evidence"
+      decision: CONFIRM_CR
+    - when: "true"
+      decision: CR_RECHECK
+
+  VERIFY_FAILED:
+    # skip_recheck=true 时无重审路径可回，复验失败一律保守阻塞（不静默放行）
+    - when: "skip_recheck"
+      decision: AUTONOMOUS_BLOCK
+    - when: "payload.is_fix_related and payload.cr_round < limits.cr_fix_max"
+      decision: CR_RECHECK
+    - when: "true"
+      decision: AUTONOMOUS_BLOCK
+
+# ---------- 隐式决策（无决策矩阵但转换表需要固定 decision 的事件） ----------
+# 消费方：adapters/statectl.py 的 _decide：事件不在 decisions 矩阵时按本表回退。
+# 不变量：事件不得同时出现在 decisions 与 implicit_decisions（二选一，见测试）。
+implicit_decisions:
+  PLAN_VALIDATED: VALIDATE_PLAN
+  PLAN_APPROVED: WAIT_USER_APPROVAL
+  CR_APPROVED: WAIT_USER_APPROVAL
+
+# ---------- 固定安全规则（配置不能改；engine 顶层强校验） ----------
+fixed_safety_rules:
+  - id: fs-1
+    rule: CR_SCANNED 报告不完整（report_complete=false）不得推进；须补齐统一报告后重扫
+  - id: fs-2
+    rule: SIMPLE Gate 不完整/失败/存在风险信号必须 RUN_CR
+  - id: fs-3
+    rule: CR 存在 MAJOR 或 DESIGN 问题必须 WAIT_USER_APPROVAL
+  - id: fs-4
+    rule: 验收存在 DESIGN/REQUIREMENT 根因必须 REQUEST_DESIGN_REWORK
+  - id: fs-5
+    rule: 验收自动修复达到上限必须 WAIT_USER_APPROVAL
+  - id: fs-6
+    rule: 自动修复仅限 MINOR + IMPLEMENTATION 问题；MAJOR/DESIGN/REQUIREMENT/信息不完整必须人工或 rework
+  - id: fs-7
+    rule: plan 改变已批准契约（PLAN_APPROVED.contract_changed=true）必须重进设计人工门，不得自动继续编码
+  - id: fs-8
+    rule: CR 处置三档互斥：BASELINE_ALIGN 与 DESIGN_REWORK 不得同时成立；has_baseline_align=true 必须走修复/人工门，不得走零问题自动确认
+
+# ---------- 三级复杂度 ----------
+# 顺序即判定顺序：从 COMPLEX 往下核对，先排除最严重再逐级降；不得重新排序
+complexity:
+  COMPLEX:
+    description: 满足任一 conditions 条件的任务
+    conditions:
+      - 变更公共接口/契约（方法签名、事件、数据模型、错误码、模块边界）：除非任务 change manifest 能证明全部调用方都在本任务范围内，否则视为跨模块，必须 COMPLEX
+      - 跨范围（改动涉及多个模块或工作范围目录）
+      - 核心流程、权限安全、资金链路、查询性能、并发一致性、迁移风险或设计未决
+  NORMAL:
+    description: 存在业务逻辑调整，但不满足复杂条件；不得用于变更公共接口/契约的任务
+  SIMPLE:
+    description: 单范围、无契约变化；纯测试/纯文档/测试+文档（无生产代码）按 SIMPLE 判定，文件数不限（仅 CODE 限 2，阈值见 simple_gate.max_files）
+    conditions:
+      - 不涉及权限、敏感数据、查询性能或并发
+  default: NORMAL
+
+# ---------- SIMPLE Gate 文件数阈值（单一数据源） ----------
+# 按 change_kind 设文件数上限：仅 CODE 有限（≤2）；unlimited = 该类型不限制文件数（纯测试/纯文档/测试+文档）。
+# engine/policy.py 从这里读取，禁止在代码里复制该值。
+# events.schema.json 的 changed_file_count.maximum 是宽松结构硬上限，必须 ≥ 本表所有有限阈值（_internal/lint 校验）。
+simple_gate:
+  max_files:
+    CODE: 2
+    DOCS_ONLY: unlimited
+    TESTS_ONLY: unlimited
+    TESTS_DOCS: unlimited
+
+# ---------- 计数语义（fixAttempts） ----------
+counter_semantics:
+  fix_attempts:
+    description: 本次验收周期中已启动的自动修复批次数
+    decision_rule: Policy 读取 fix_attempts，以 fix_attempts >= acceptance_fix_max 判断是否可自动修复（只判断，不递增）
+    mutation_rule: 仅当 Decision=FIX_ACCEPTANCE_ISSUES 时，由状态转换层（statectl）递增后写回
+    reset_rule: 新的阶段 5 验收周期开始时重置；人工批准后的修复不隐式清零

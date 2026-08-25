@@ -1,0 +1,566 @@
+# ============================================================
+# workflow 状态机模型 — 唯一权威
+# 关键约定：
+#   - 状态 = "谁该行动"的可观察阶段；轮次/指纹等计数进任务元数据，不建模成状态
+#   - 事件名不承载路由方向；方向只在 Policy Decision
+#   - transitions 按 domain 分组（YAML 书写糖），engine/load_model 加载时扁平化
+#   - semantic_doc = "在该状态下 LLM 读什么"（source 语义，挂 state，不随 decision 变）
+#   - action = "该 (state,event,decision) 要做什么"（挂 transitions）；agent_role 单一来源在 action_grammar
+# 使用方：engine/state_machine.py（校验/应用）、adapters/statectl.py（执行）、
+#         engine/render/（派生 vocab.md/进度）、_internal/lint/（词表 + 元数据校验）
+# ============================================================
+version: 2
+name: workflow-state-machine
+
+# ---------- 里程碑/需求级 ----------
+milestone:
+  phase_values:
+    DISCUSSING:
+      description: 阶段 1 需求讨论
+      semantic_doc: references/stages/stage-1-discuss.md
+    ANALYZING:
+      description: 阶段 2 分析与设计
+      semantic_doc: references/stages/stage-2-design.md
+    DESIGN_REVIEW:
+      description: 阶段 3 设计审核（人工门）
+      semantic_doc: references/stages/stage-3-review.md
+    DISPATCHING:
+      description: 阶段 4 前置下发（仅 dual 模式：设计通过后把 design-package 裁剪下发到执行仓）
+      semantic_doc: references/commands/index.md
+    DEVELOPING:
+      description: 阶段 4 开发与逐任务审查
+      semantic_doc: references/stages/stage-4.0-dev.md
+    ACCEPTING:
+      description: 阶段 5 收尾验收
+      semantic_doc: references/stages/stage-5-accept.md
+    COMPLETED:
+      description: 流程完成
+      semantic_doc: references/stages/stage-5-accept.md
+    AUTONOMOUS_COMPLETED:
+      description: 自治模式高质量完成（全任务 DONE + 零阻塞 + 全质量门通过）
+      semantic_doc: references/stages/stage-5-accept.md
+  lifecycle_values:
+    ACTIVE: 可推进
+    BLOCKED: 阻塞（正交 overlay，携带 blocker）
+    COMPLETED: 完成
+  gate_types: [DESIGN, PLAN, CR, ACCEPT]
+  # 人工门事件 → pending_gate.type（approve 路由唯一来源；engine/state_machine.py 消费）
+  gate_events:
+    DESIGN_APPROVED: DESIGN
+    PLAN_APPROVED: PLAN
+    CR_APPROVED: CR
+    ACCEPTANCE_APPROVED: ACCEPT
+  # pending_gate: {type, target_task, since}   —— 单门不变量：同里程碑最多一个
+  # blocker: {reason, resume_event}            —— 仅 lifecycle=BLOCKED 时有意义
+
+# ---------- 任务级状态（14 态平铺，不建 namespace；semantic_doc 挂 state） ----------
+task_states:
+  TODO:
+    description: 待开始（复杂度判定 → CODING / PLANNING）
+    semantic_doc: references/stages/stage-4.0-dev.md
+  PLANNING:
+    description: 复杂任务出 plan 中
+    semantic_doc: references/stages/stage-4.1-plan.md
+  PLAN_AWAITING_DECISION:
+    description: plan 完成，等待自动校验或人工确认
+    semantic_doc: references/stages/stage-4.1-plan.md
+  PLAN_CONFIRMED:
+    description: plan 已确认
+    semantic_doc: references/stages/stage-4.1-plan.md
+  CODING:
+    description: 编码中
+    semantic_doc: references/stages/stage-4.0-dev.md
+  CR_PLANNED:
+    description: review-plan 完成，待启动 reviewer
+    semantic_doc: references/stages/stage-4.2-cr.md
+  CR_SCANNED:
+    description: 全部必选 reviewer 完成，待 Judge
+    semantic_doc: references/stages/stage-4.2-cr.md
+  CR_JUDGED:
+    description: Judge 已裁决，待分流（WAIT 人工门 / 设计返工中）
+    semantic_doc: references/stages/stage-4.2-cr.md
+  CR_FIXING:
+    description: 按修复契约执行中
+    semantic_doc: references/stages/stage-4.2-cr.md
+  CR_RECHECKING:
+    description: 修复后重跑 IMPLEMENTATION + Judge（其他维度按 cr.levels 派发）
+    semantic_doc: references/stages/stage-4.2-cr.md
+  CR_PASSED:
+    description: 客观质量门通过，待进入复验
+    semantic_doc: references/stages/stage-4.2-cr.md
+  VERIFYING:
+    description: 复验中
+    semantic_doc: references/stages/stage-4.0-dev.md
+  DONE:
+    description: 完成（终态，无 outbound）
+    semantic_doc: references/stages/stage-4.0-dev.md
+  AUTONOMOUS_BLOCKED:
+    description: 任务级可信阻塞终态（lifecycle 强制 BLOCKED，无 outbound）
+    semantic_doc: references/stages/stage-4.2-cr.md
+
+# ---------- agent 角色 ----------
+# main = 主 Agent 自己执行（不 dispatch sub-agent）；其余角色唯一来源 model/agent-contracts.yml#agents.id
+# lint(model_meta) 校验 action_grammar.agent_role ∈ {main} ∪ agent-contracts#agents.id
+
+# ---------- action 名字登记（仅 registry：description + agent_role；doc_lint 校验引用合法） ----------
+action_grammar:
+  ENTER_CODING: { description: 进入编码, agent_role: main }
+  ENTER_PLANNING: { description: 进入复杂任务 plan, agent_role: main }
+  DISPATCH_REVIEWERS: { description: 风险调度并派 reviewer + coordinator, agent_role: main }
+  VERIFY: { description: 复验（测试/编译/scope）, agent_role: main }
+  VALIDATE_PLAN: { description: plan 自动完整性校验, agent_role: plan-validator }
+  CONFIRM_PLAN: { description: plan 校验通过确认, agent_role: main }
+  REPLAN: { description: plan 校验未过，重新出 plan, agent_role: main }
+  WAIT_PLAN_APPROVAL: { description: 停在 plan 人工门, agent_role: main }
+  WAIT_FOR_APPROVAL: { description: 停在 CR 人工门等用户裁决, agent_role: main }
+  WAIT_CR_APPROVAL: { description: 停在 CR 人工门（approve 路由）, agent_role: main }
+  WRITE_FIX_CONTRACT: { description: 写修复契约 + 派 executor 修复, agent_role: main }
+  REWRITE: { description: 按修复契约改写, agent_role: executor }
+  CONFIRM_QUALITY_GATE: { description: 质量门证据确认 → CR_PASSED, agent_role: main }
+  RECHECK: { description: 复验失败 fix 相关 → 回重审, agent_role: main }
+  BLOCK: { description: 可信阻塞终态，保存证据, agent_role: main }
+  REWORK_DESIGN: { description: 设计根因返工, agent_role: main }
+  REWORK_REQUIREMENT: { description: 需求根因返工, agent_role: main }
+  REWORK_IMPLEMENTATION: { description: 实现根因返工, agent_role: main }
+  REWORK_TASK: { description: 受影响任务回 TODO, agent_role: main }
+  ADVANCE_TO_ANALYZING: { description: 阶段 1 → 2, agent_role: main }
+  ADVANCE_TO_DESIGN_REVIEW: { description: 阶段 2 → 3 设计门, agent_role: main }
+  APPROVE_DESIGN: { description: 设计审核通过, agent_role: main }
+  REJECT_DESIGN: { description: 设计审核打回, agent_role: main }
+  ADVANCE_TO_DEVELOPING: { description: 下发完成 → 阶段 4 开发（dual）, agent_role: main }
+  ADVANCE_TO_ACCEPTING: { description: 阶段 4 → 5, agent_role: main }
+  WAIT_ACCEPTANCE_APPROVAL: { description: 停在验收人工门, agent_role: main }
+  FIX_ACCEPTANCE: { description: 自动修复验收实现问题, agent_role: main }
+  PROCESS_ACCEPTANCE: { description: 处理验收裁决/结果, agent_role: main }
+  FINISH_ACCEPTANCE: { description: 验收通过 → COMPLETED, agent_role: main }
+  GENERATE_SUMMARY: { description: 验收通过 → AUTONOMOUS_COMPLETED + 交付清单, agent_role: main }
+  SET_BLOCKER: { description: 标记阻塞, agent_role: main }
+  CLEAR_BLOCKER: { description: 解除阻塞, agent_role: main }
+
+# ---------- 事件 ----------
+events:
+  STAGE_COMPLETED: 阶段完成，请求推进
+  DESIGN_APPROVED: 设计审核人工通过
+  DESIGN_REJECTED: 设计审核打回
+  DISPATCH_COMPLETED: 全部执行单元下发完成（仅 dual：DISPATCHING → DEVELOPING）
+  STAGE_BLOCKED: 标记阻塞（携带 reason、resume_event）
+  BLOCKER_RESOLVED: 阻塞已解决，恢复
+  TASK_STARTED: 任务开始（携带 complexity 决定路径）
+  TASK_DOD_PASSED: 编码 + DoD 完成
+  PLAN_READY: 复杂任务 plan 已产出
+  PLAN_VALIDATED: plan-validator 校验结果（result）
+  PLAN_APPROVED: plan 人工确认（contract_changed 表示是否改契约）
+  CR_SCANNED: 全部必选 reviewer + coordinator 完成（report_complete）
+  CR_JUDGED: Judge 裁决完成（携带 accepted/rejected/uncertain_count、min_confidence、has_design_rework、has_baseline_align）
+  CR_RECHECKED: 修复后重审完成（携带 cr_round、resolved/new_issue_count、regression_detected）
+  CR_APPROVED: CR 问题人工裁决完成（携带 adjudications、has_implement_fix、has_baseline_align、has_design_rework）
+  TASK_CR_PASSED: CR 质量门通过，进入全局复验
+  REWRITE_COMPLETED: 已采纳问题改写完成
+  VERIFY_PASSED: 复验通过
+  VERIFY_FAILED: 复验失败（携带 evidence、is_fix_related、cr_round）
+  ACCEPTANCE_FAILED: 收尾验收发现问题
+  ACCEPTANCE_APPROVED: 验收问题人工裁决完成
+  ACCEPTANCE_COMPLETED: 验收通过，流程完成
+  REWORK_STARTED: 返工开始（携带 level）
+  INIT_TASKS: 阶段4入口全量登记任务（dev-tasks → state，一次性；"全部任务 DONE"按完整计划集判定，亦为 split 截止锚点）
+
+# ---------- 转换表（按 domain 分组；engine/load_model 加载时扁平化） ----------
+# 字段说明同 v1：id / scope / from / event / decision / when / to / effects / to_same
+# 占位符：$task / $reason / $resume_event 由 statectl 从上下文与 payload 填充
+transitions:
+  # ===== 里程碑级（scope: milestone）=====
+  milestone:
+    - id: milestone.discussing.stage_completed
+      scope: milestone
+      from: DISCUSSING
+      event: STAGE_COMPLETED
+      to: ANALYZING
+      action: ADVANCE_TO_ANALYZING
+    - id: milestone.analysing.stage_completed
+      scope: milestone
+      from: ANALYZING
+      event: STAGE_COMPLETED
+      to: DESIGN_REVIEW
+      effects: {set_pending_gate: {type: DESIGN, target_task: null}}
+      action: ADVANCE_TO_DESIGN_REVIEW
+    - id: milestone.design_review.design_approved
+      scope: milestone
+      from: DESIGN_REVIEW
+      event: DESIGN_APPROVED
+      when: [{path: payload.mode, op: "!=", value: "dual"}]
+      to: DEVELOPING
+      effects: {clear_pending_gate: true}
+      action: APPROVE_DESIGN
+    - id: milestone.design_review.design_approved_dispatch
+      scope: milestone
+      from: DESIGN_REVIEW
+      event: DESIGN_APPROVED
+      when: [{path: payload.mode, op: "==", value: "dual"}]
+      to: DISPATCHING
+      effects: {clear_pending_gate: true}
+      action: APPROVE_DESIGN
+    - id: milestone.dispatching.completed
+      scope: milestone
+      from: DISPATCHING
+      event: DISPATCH_COMPLETED
+      to: DEVELOPING
+      action: ADVANCE_TO_DEVELOPING
+    - id: milestone.design_review.design_rejected
+      scope: milestone
+      from: DESIGN_REVIEW
+      event: DESIGN_REJECTED
+      to: ANALYZING
+      effects: {clear_pending_gate: true}
+      action: REJECT_DESIGN
+    - id: milestone.developing.stage_completed
+      scope: milestone
+      from: DEVELOPING
+      event: STAGE_COMPLETED
+      to: ACCEPTING
+      action: ADVANCE_TO_ACCEPTING
+    - id: milestone.accepting.acceptance_failed.wait_for_user
+      scope: milestone
+      from: ACCEPTING
+      event: ACCEPTANCE_FAILED
+      decision: WAIT_USER_APPROVAL
+      to_same: true
+      effects: {set_pending_gate: {type: ACCEPT, target_task: null}}
+      action: WAIT_ACCEPTANCE_APPROVAL
+    - id: milestone.accepting.acceptance_failed.auto_fix
+      scope: milestone
+      from: ACCEPTING
+      event: ACCEPTANCE_FAILED
+      decision: FIX_ACCEPTANCE_ISSUES
+      to_same: true
+      action: FIX_ACCEPTANCE
+    - id: milestone.accepting.acceptance_failed.request_rework
+      scope: milestone
+      from: ACCEPTING
+      event: ACCEPTANCE_FAILED
+      decision: REQUEST_DESIGN_REWORK
+      to_same: true
+      action: REWORK_DESIGN
+    - id: milestone.accepting.acceptance_approved
+      scope: milestone
+      from: ACCEPTING
+      event: ACCEPTANCE_APPROVED
+      to_same: true
+      effects: {clear_pending_gate: true}
+      action: PROCESS_ACCEPTANCE
+    - id: milestone.accepting.acceptance_completed.manual
+      scope: milestone
+      from: ACCEPTING
+      event: ACCEPTANCE_COMPLETED
+      decision: FINISH_ACCEPTANCE
+      to: COMPLETED
+      effects: {clear_pending_gate: true, set_lifecycle: COMPLETED}
+      action: FINISH_ACCEPTANCE
+    - id: milestone.accepting.acceptance_completed.autonomous
+      scope: milestone
+      from: ACCEPTING
+      event: ACCEPTANCE_COMPLETED
+      decision: GENERATE_SUMMARY
+      to: AUTONOMOUS_COMPLETED
+      effects: {clear_pending_gate: true, set_lifecycle: COMPLETED}
+      action: GENERATE_SUMMARY
+    - id: milestone.any.stage_blocked
+      scope: milestone
+      from: "*"
+      event: STAGE_BLOCKED
+      to_same: true
+      effects: {set_blocker: {reason: $reason, resume_event: $resume_event}}
+      action: SET_BLOCKER
+    - id: milestone.any.blocker_resolved
+      scope: milestone
+      from: "*"
+      event: BLOCKER_RESOLVED
+      to_same: true
+      effects: {clear_blocker: true}
+      action: CLEAR_BLOCKER
+    - id: milestone.any.rework_started.design
+      scope: milestone
+      from: "*"
+      event: REWORK_STARTED
+      when: [{path: payload.level, op: "==", value: DESIGN}]
+      to: ANALYZING
+      effects: {clear_pending_gate: true, clear_blocker: true}
+      action: REWORK_DESIGN
+    - id: milestone.any.rework_started.requirement
+      scope: milestone
+      from: "*"
+      event: REWORK_STARTED
+      when: [{path: payload.level, op: "==", value: REQUIREMENT}]
+      to: DISCUSSING
+      effects: {clear_pending_gate: true, clear_blocker: true}
+      action: REWORK_REQUIREMENT
+    - id: milestone.any.rework_started.implementation
+      scope: milestone
+      from: "*"
+      event: REWORK_STARTED
+      when: [{path: payload.level, op: "==", value: IMPLEMENTATION}]
+      to_same: true
+      effects: {clear_pending_gate: true, clear_blocker: true}
+      action: REWORK_IMPLEMENTATION
+
+  # ===== 任务主流程（scope: task）=====
+  task:
+    - id: task.todo.task_started.simple_or_normal
+      scope: task
+      from: TODO
+      event: TASK_STARTED
+      when: [{path: payload.complexity, op: in, value: [SIMPLE, NORMAL]}]
+      to: CODING
+      action: ENTER_CODING
+    - id: task.todo.task_started.complex
+      scope: task
+      from: TODO
+      event: TASK_STARTED
+      when: [{path: payload.complexity, op: "==", value: COMPLEX}]
+      to: PLANNING
+      action: ENTER_PLANNING
+    - id: task.coding.task_dod_passed.run_cr
+      scope: task
+      from: CODING
+      event: TASK_DOD_PASSED
+      decision: RUN_CR
+      to: CR_PLANNED
+      action: DISPATCH_REVIEWERS
+    - id: task.coding.task_dod_passed.skip_cr
+      scope: task
+      from: CODING
+      event: TASK_DOD_PASSED
+      decision: SKIP_CR
+      to: VERIFYING
+      action: VERIFY
+    - id: task.cr_passed.verifying
+      scope: task
+      from: CR_PASSED
+      event: TASK_CR_PASSED
+      to: VERIFYING
+      action: VERIFY
+    - id: task.verifying.verify_passed
+      scope: task
+      from: VERIFYING
+      event: VERIFY_PASSED
+      to: DONE
+      action: VERIFY
+    - id: task.verifying.verify_failed.recheck
+      scope: task
+      from: VERIFYING
+      event: VERIFY_FAILED
+      decision: CR_RECHECK
+      to: CR_RECHECKING
+      action: RECHECK
+    - id: task.verifying.verify_failed.blocked
+      scope: task
+      from: VERIFYING
+      event: VERIFY_FAILED
+      decision: AUTONOMOUS_BLOCK
+      to: AUTONOMOUS_BLOCKED
+      action: BLOCK
+    - id: task.any.rework_started
+      scope: task
+      from: "*"
+      event: REWORK_STARTED
+      to: TODO
+      action: REWORK_TASK
+
+  # ===== plan 子流程（scope: task）=====
+  plan:
+    - id: plan.planning.plan_ready
+      scope: task
+      from: PLANNING
+      event: PLAN_READY
+      to: PLAN_AWAITING_DECISION
+      effects: {set_pending_gate: {type: PLAN, target_task: $task}}
+      action: VALIDATE_PLAN
+    - id: plan.awaiting_decision.plan_validated.pass
+      scope: task
+      from: PLAN_AWAITING_DECISION
+      event: PLAN_VALIDATED
+      decision: VALIDATE_PLAN
+      when: [{path: payload.result, op: "==", value: PASS}]
+      to: PLAN_CONFIRMED
+      effects: {clear_pending_gate: true}
+      action: CONFIRM_PLAN
+    - id: plan.awaiting_decision.plan_validated.fail
+      scope: task
+      from: PLAN_AWAITING_DECISION
+      event: PLAN_VALIDATED
+      decision: VALIDATE_PLAN
+      when: [{path: payload.result, op: "==", value: FAIL}]
+      to: PLANNING
+      effects: {clear_pending_gate: true}
+      action: REPLAN
+    - id: plan.awaiting_decision.plan_approved
+      scope: task
+      from: PLAN_AWAITING_DECISION
+      event: PLAN_APPROVED
+      decision: WAIT_USER_APPROVAL
+      to: PLAN_CONFIRMED
+      effects: {clear_pending_gate: true}
+      action: WAIT_PLAN_APPROVAL
+    - id: plan.confirmed.task_started
+      scope: task
+      from: PLAN_CONFIRMED
+      event: TASK_STARTED
+      to: CODING
+      action: ENTER_CODING
+
+  # ===== CR 子流程（scope: task）=====
+  cr:
+    - id: cr.planned.scanned
+      scope: task
+      from: CR_PLANNED
+      event: CR_SCANNED
+      when: [{path: payload.report_complete, op: "==", value: true}]
+      to: CR_SCANNED
+      action: DISPATCH_REVIEWERS
+    - id: cr.scanned.judged.pass
+      scope: task
+      from: CR_SCANNED
+      event: CR_JUDGED
+      decision: CONFIRM_CR
+      when: [{path: payload.quality_gate_evidence, op: "!=", value: null}]
+      to: CR_PASSED
+      action: CONFIRM_QUALITY_GATE
+    - id: cr.scanned.judged.fixing
+      scope: task
+      from: CR_SCANNED
+      event: CR_JUDGED
+      decision: FIX_CR_ISSUES
+      when: [{path: payload.fix_contract_path, op: "!=", value: null}]
+      to: CR_FIXING
+      action: WRITE_FIX_CONTRACT
+    - id: cr.scanned.judged.blocked
+      scope: task
+      from: CR_SCANNED
+      event: CR_JUDGED
+      decision: AUTONOMOUS_BLOCK
+      to: AUTONOMOUS_BLOCKED
+      action: BLOCK
+    - id: cr.scanned.judged.wait
+      scope: task
+      from: CR_SCANNED
+      event: CR_JUDGED
+      decision: WAIT_USER_APPROVAL
+      to: CR_JUDGED
+      effects: {set_pending_gate: {type: CR, target_task: $task}}
+      action: WAIT_CR_APPROVAL
+    - id: cr.scanned.judged.rework
+      scope: task
+      from: CR_SCANNED
+      event: CR_JUDGED
+      decision: REQUEST_DESIGN_REWORK
+      to: CR_JUDGED
+      action: REWORK_DESIGN
+    # 下一轮：CR_RECHECKING → CR_JUDGED 后，Judge 重新裁决（CR_JUDGED 事件再次提交）
+    - id: cr.judged.rejudged.pass
+      scope: task
+      from: CR_JUDGED
+      event: CR_JUDGED
+      decision: CONFIRM_CR
+      when: [{path: payload.quality_gate_evidence, op: "!=", value: null}]
+      to: CR_PASSED
+      action: CONFIRM_QUALITY_GATE
+    - id: cr.judged.rejudged.fixing
+      scope: task
+      from: CR_JUDGED
+      event: CR_JUDGED
+      decision: FIX_CR_ISSUES
+      when: [{path: payload.fix_contract_path, op: "!=", value: null}]
+      to: CR_FIXING
+      action: WRITE_FIX_CONTRACT
+    - id: cr.judged.rejudged.blocked
+      scope: task
+      from: CR_JUDGED
+      event: CR_JUDGED
+      decision: AUTONOMOUS_BLOCK
+      to: AUTONOMOUS_BLOCKED
+      action: BLOCK
+    # 人工门（guarded/manual）：CR_JUDGED + WAIT_USER_APPROVAL → CR_APPROVED 路由
+    - id: cr.judged.approved.has_fix
+      scope: task
+      from: CR_JUDGED
+      event: CR_APPROVED
+      decision: WAIT_USER_APPROVAL
+      when: [
+        {path: payload.has_implement_fix, op: "==", value: true},
+        {path: payload.has_design_rework, op: "==", value: false},
+        {path: payload.fix_contract_path, op: "!=", value: null}
+      ]
+      to: CR_FIXING
+      effects: {clear_pending_gate: true}
+      action: WAIT_FOR_APPROVAL
+    # 基线对齐（BASELINE_ALIGN）：has_implement_fix=false 的纯基线补记；含实现修复的走 has_fix。
+    # 与 has_fix（has_implement_fix=true）和 no_fix（quality_gate_evidence!=null）互斥，避免多匹配。
+    - id: cr.judged.approved.baseline_align
+      scope: task
+      from: CR_JUDGED
+      event: CR_APPROVED
+      decision: WAIT_USER_APPROVAL
+      when: [
+        {path: payload.has_baseline_align, op: "==", value: true},
+        {path: payload.has_implement_fix, op: "==", value: false},
+        {path: payload.has_design_rework, op: "==", value: false},
+        {path: payload.quality_gate_evidence, op: "==", value: null},
+        {path: payload.fix_contract_path, op: "!=", value: null}
+      ]
+      to: CR_FIXING
+      effects: {clear_pending_gate: true}
+      action: WAIT_FOR_APPROVAL
+    - id: cr.judged.approved.no_fix
+      scope: task
+      from: CR_JUDGED
+      event: CR_APPROVED
+      decision: WAIT_USER_APPROVAL
+      when: [
+        {path: payload.has_implement_fix, op: "==", value: false},
+        {path: payload.has_design_rework, op: "==", value: false},
+        {path: payload.quality_gate_evidence, op: "!=", value: null}
+      ]
+      to: CR_PASSED
+      effects: {clear_pending_gate: true}
+      action: WAIT_FOR_APPROVAL
+    # 修复后二次审核（cr.capabilities.recheck）：CR_RECHECK → 进重审；CONFIRM_CR → 只审核一次直接确认
+    - id: cr.fixing.rechecking
+      scope: task
+      from: CR_FIXING
+      event: REWRITE_COMPLETED
+      decision: CR_RECHECK
+      to: CR_RECHECKING
+      action: REWRITE
+    - id: cr.fixing.rewritten.confirm
+      scope: task
+      from: CR_FIXING
+      event: REWRITE_COMPLETED
+      decision: CONFIRM_CR
+      when: [{path: payload.quality_gate_evidence, op: "!=", value: null}]
+      to: CR_PASSED
+      action: CONFIRM_QUALITY_GATE
+    - id: cr.rechecking.rechecked.pass
+      scope: task
+      from: CR_RECHECKING
+      event: CR_RECHECKED
+      decision: CONFIRM_CR
+      when: [{path: payload.quality_gate_evidence, op: "!=", value: null}]
+      to: CR_PASSED
+      action: CONFIRM_QUALITY_GATE
+    - id: cr.rechecking.rechecked.iterate
+      scope: task
+      from: CR_RECHECKING
+      event: CR_RECHECKED
+      decision: FIX_CR_ISSUES
+      to: CR_JUDGED
+      action: WRITE_FIX_CONTRACT
+    - id: cr.rechecking.rechecked.blocked
+      scope: task
+      from: CR_RECHECKING
+      event: CR_RECHECKED
+      decision: AUTONOMOUS_BLOCK
+      to: AUTONOMOUS_BLOCKED
+      action: BLOCK
+
+# ---------- 不变量 ----------
+# 唯一来源 engine/invariants.py（及 state_machine/policy 的 enforce 点）；此处不声明，
+# 避免双重来源漂移。lint(model_meta) 禁止本文件重现 invariants 段（2026-08-07 收敛）。

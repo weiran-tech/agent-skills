@@ -1,0 +1,250 @@
+# ============================================================
+# workflow agent 契约 — 统一输入/输出/返回协议
+# 任务 diff 归属基线（task change manifest）是 SIMPLE checker 的前置
+# 使用方：references/stages/*（调度时构造 prompt）、statectl（校验 agent 产出）、prompts/（模板来源）
+# 改名/改输出结构只改本文件，禁止散落在 stage 文档
+# ============================================================
+version: 1
+
+# ---------- 通用约定 ----------
+common:
+  bash_constraint: "禁止 for/while/if/case/here-doc/嵌套 $()"
+  output_root: "只落项目内 .task/ 对应目录，禁止写 home 或仓库外"
+  return_protocol:
+    COMPLETE: 产出物完整，可进入下一环节
+    INCOMPLETE: 缺失输入或产出不完整，主 Agent 需补齐后重跑；不得误报 COMPLETE
+  context_isolation: 编码/审查/汇总/改写各自独立上下文，禁止自审
+
+# ---------- agent 契约 ----------
+agents:
+  analyst:
+    role: 阶段 2 模块分析（只读）
+    inputs:
+      - discussion.md
+      - "docs/{范围标签}/ 架构文档"
+      - "需求 docs/"
+    outputs:
+      - path: ".task/analysis/{范围标签}.md"
+        structure: 影响面/风险/改动点
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  architect:
+    role: 阶段 2 汇总设计（只读；单模块直调时自带模块分析）
+    inputs:
+      - analysis/（多模块时；单模块直调时为 discussion + docs/business/{模块名}/，无 analysis/）
+      - discussion.md
+      - docs/business/cross-module.md
+    outputs:
+      - path: ".task/design-baseline.md"
+        structure: 设计基线（共识/契约层），必含清单
+      - path: ".task/dev-tasks.md"
+        structure: 任务拆分，含复杂度标注与依赖
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  planner:
+    role: 阶段 4 复杂任务任务级详细设计（只读）
+    inputs:
+      - dev-tasks.md
+      - design-baseline.md
+      - analysis/
+      - "docs/business/{模块名}/"
+      - "需求 docs/"
+    outputs:
+      - path: ".task/plans/{范围标签}-{X.Y}.md"
+        structure: LLD/改动清单/测试清单
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  plan-validator:
+    role: 阶段 4 plan 完整性校验（只读，只判断不评价方案优劣）
+    inputs:
+      - ".task/plans/{范围标签}-{X.Y}.md"
+      - dev-tasks.md
+      - design-baseline.md
+    outputs:
+      - path: null
+        structure: "result: PASS | FAIL | INCOMPLETE + blockers"
+    return: PASS | FAIL | INCOMPLETE
+    permissions: read-only
+
+  executor:
+    role: 阶段 4/5 编码与改写（读写，只改指定范围）
+    inputs:
+      - 任务定义（dev-tasks.md）
+      - design-baseline.md
+      - 已确认 plan（复杂任务）或前序 done 契约
+      - 裁决文件（CR/验收）
+    outputs:
+      - path: ".task/done/{范围标签}-{X.Y}.md"
+        structure: 变更文件清单/命令与退出结果/风险证据
+    return: COMPLETE | INCOMPLETE
+    permissions: read-write，工作范围限定
+    note: 修复契约含 baseline_align 段时，须一并追齐 design-baseline（只追加既定意图落地记录，禁止改任何契约值）
+
+  reviewer-implementation:
+    role: 阶段 4 实现正确性审查（只读，固定执行）
+    inputs:
+      - ".task/review/{范围标签}-{X.Y}/review-plan.md"
+      - ".task/done/{范围标签}-{X.Y}.md"
+      - design-baseline.md
+      - 任务范围 diff
+    outputs:
+      - path: ".task/review/{范围标签}-{X.Y}/implementation.md"
+        structure: 维度/结果/问题清单（定位=文件+行数范围，多锚点/触发/根因/证据/影响/建议）
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  reviewer-security:
+    role: 阶段 4 安全审查（只读，按风险调度）
+    inputs:
+      - ".task/review/{范围标签}-{X.Y}/review-plan.md"
+      - ".task/done/{范围标签}-{X.Y}.md"
+      - design-baseline.md
+      - 任务范围 diff
+    outputs:
+      - path: ".task/review/{范围标签}-{X.Y}/security.md"
+        structure: 维度/结果/问题清单（定位=文件+行数范围，多锚点/触发/根因/证据/影响/建议）
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  reviewer-design:
+    role: 阶段 4 流程与契约审查（只读，按风险调度）
+    inputs:
+      - ".task/review/{范围标签}-{X.Y}/review-plan.md"
+      - dev-tasks.md
+      - ".task/done/{范围标签}-{X.Y}.md"
+      - design-baseline.md
+      - docs/business/cross-module.md
+    outputs:
+      - path: ".task/review/{范围标签}-{X.Y}/design.md"
+        structure: 维度/结果/问题清单（定位=文件或设计章节+行数范围，多锚点/触发/根因/证据/影响/建议）
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  reviewer-performance:
+    role: 阶段 4 性能审查（只读，按风险调度）
+    inputs:
+      - ".task/review/{范围标签}-{X.Y}/review-plan.md"
+      - ".task/done/{范围标签}-{X.Y}.md"
+      - design-baseline.md
+      - 任务范围 diff
+    outputs:
+      - path: ".task/review/{范围标签}-{X.Y}/performance.md"
+        structure: 维度/结果/问题清单（定位=文件+行数范围，多锚点/触发/根因/证据/影响/建议）
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  reviewer-coordinator:
+    role: 阶段 4 多维 CR 汇总（只读，承担报告内容校验 + 合并，不重新审码；主 Agent 不逐份读原始报告）
+    inputs:
+      - ".task/review/{范围标签}-{X.Y}/review-plan.md"
+      - 全部必选维度报告
+    outputs:
+      - path: ".task/review/{范围标签}-{X.Y}.md"
+        structure: 统一问题清单（定位=文件+行数范围/verdict/disposition 两字段）+ 来源守恒统计
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  reviewer-judge:
+    role: 阶段 4 CR 独立裁决（只读；对 unified 报告逐条裁决 + 置信度 + 聚合统计，不重新审码；按 judging_rules 判定 DESIGN_REWORK）
+    inputs:
+      - ".task/review/{范围标签}-{X.Y}/unified.md"
+      - ".task/review/{范围标签}-{X.Y}/review-plan.md"
+      - design-baseline.md
+      - dev-tasks.md
+      - "（按需）对应 source 维度报告，核对证据"
+    judging_rules:
+      q1_baseline: 修复是否动 design-baseline：否 → IMPLEMENT_FIX（纯实现）
+      q2_contract: 动基线时是否改契约值（接口签名/事件名/状态码/数据模型）或牵动他任务/核心流程：否 → BASELINE_ALIGN（实现+基线补记，不改契约值）；是 → DESIGN_REWORK
+      design_rework_anchor: DESIGN_REWORK 必须指得出具体契约值（design-baseline 哪段，from→to）或受牵动的下游任务编号；指不出的一律降档
+      reason_required: 裁 DESIGN_REWORK 标注锚点；BASELINE_ALIGN 注明「仅同步、无契约变更」
+    outputs:
+      - path: ".task/review/{范围标签}-{X.Y}/judge.md"
+        structure: 逐条裁决（定位=文件+行数范围，继承 unified 锚点/verdict/confidence/处置 + 依 judging_rules 的裁断理由）+ 聚合统计（accepted/rejected/uncertain/min_confidence/has_design_rework）
+    return: 首行必须为 judge.md 实际路径（供主 Agent 展示与 CR_JUDGED/CR_RECHECKED.judge_report_path），次行为 状态（COMPLETE | INCOMPLETE）+ 聚合摘要；路径禁止使用占位符
+    permissions: read-only；按需读取 source 报告核对证据
+
+  verifier:
+    role: 阶段 5 收尾验收（只读，不修改代码）
+    inputs:
+      - design-baseline.md（含返工/plan 同步，最新契约）
+      - docs/business/cross-module.md
+      - 全部任务范围
+    outputs:
+      - path: ".task/acceptance/acceptance.md"
+        structure: 问题清单 + 严重度 + 根因层级 + 报告完整性
+    return: COMPLETE | INCOMPLETE
+    permissions: read-only
+
+  simple-gate-checker:
+    role: SIMPLE Gate 独立复核（只读业务代码；diff 归属可靠后转正，前期作高保障模式/抽样）
+    inputs:
+      - task change manifest（归属基线）
+      - 任务范围 diff
+      - ".task/done/{范围标签}-{X.Y}.md"
+      - dev-tasks.md
+    outputs:
+      - path: ".task/done/{范围标签}-{X.Y}.md#gate"
+        structure: |
+          复核结论追加写入 done 报告 gate 段，按序执行：
+          1. 重建变更文件清单 —— 从实际 diff 提取，不采信 done 报告自述
+          2. 推导 change_kind —— 按文件路径：任一生产代码文件 → CODE；全部为文档（docs/、*.md）→ DOCS_ONLY；全部为测试（tests/、testing/、*Test.*）→ TESTS_ONLY；仅含测试+文档、无生产代码 → TESTS_DOCS
+          3. 实际执行测试与静态检查 —— 记录命令与退出码
+          4. 范围与风险复核 —— 无越界文件；risk_signals 命中仍走完整 CR
+          5. 裁决 —— PASS | FAIL | INCOMPLETE
+    return: 文件路径 + PASS | FAIL | INCOMPLETE
+    permissions: read-only（唯一写权限 = 追加 done 报告 #gate 段）
+    note: 必须从实际 diff 重建变更文件清单并实际执行测试，不采信 done 报告自述；否则只是换人读自证材料。复核结论必须落盘到 done 报告 gate 段，主 Agent 以该段为裁决依据。change_kind 由文件路径证据推导，不得按任务描述自标；它只放宽文件数阈值（test/doc 类型不限文件数，仅 CODE 限 2，阈值定义于 `model/policy.yml#simple_gate.max_files`），scope/tests/static/diff 仍须 PASS，risk_signals 命中仍走完整 CR。
+
+# ---------- skill 元信息（slash 命令根单源：generated/commands.md 派生用） ----------
+skill:
+  name: workflow
+  command: /workflow
+
+# ---------- workflow 子命令路由（命令字典派生源；改命令只改本段） ----------
+commands:
+  - id: use
+    state_prereq: 任意（设定活动指针）
+    semantic_doc: references/commands/index.md
+  - id: start
+    state_prereq: 无（新需求）
+    semantic_doc: references/commands/index.md
+  - id: next
+    state_prereq: 当前 phase/task
+    semantic_doc: references/commands/index.md
+  - id: approve
+    state_prereq: pending_gate（自动按门类型分发）
+    semantic_doc: references/commands/index.md
+  - id: status
+    state_prereq: 任意
+    semantic_doc: references/commands/index.md
+  - id: list
+    state_prereq: 任意
+    semantic_doc: references/commands/index.md
+  - id: split
+    state_prereq: 大需求拆里程碑
+    semantic_doc: references/commands/index.md
+  - id: rework
+    state_prereq: DEVELOPING/ACCEPTING 缺陷返工
+    semantic_doc: references/commands/rework.md
+  - id: summary
+    state_prereq: 任意（验收通过后重出最终清单）
+    semantic_doc: references/commands/summary.md
+  - id: hotfix
+    state_prereq: 任意（独立轻量流程）
+    semantic_doc: references/commands/hotfix.md
+  - id: config
+    state_prereq: 任意
+    semantic_doc: references/commands/config.md
+
+# ---------- 任务 diff 归属基线（SIMPLE checker 前置） ----------
+diff_attribution:
+  task_change_manifest:
+    description: 并行 executor 共用工作区时，每个任务必须有可归属的变更边界
+    required:
+      - 任务开始基线（git base + 起点）
+      - 任务声明的工作范围目录
+      - diff 归属规则（路径前缀 → 任务）
+    enforcement: 阶段 4 并行编码前建立；归属不可靠时 SIMPLE Gate 不得 SKIP_CR
