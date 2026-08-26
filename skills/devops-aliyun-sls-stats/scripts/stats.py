@@ -13,6 +13,7 @@
 """
 
 import json
+import os
 import sys
 import subprocess
 from dataclasses import dataclass, field
@@ -85,6 +86,7 @@ def build_sls_query(log_format: LogFormat, days: int, threshold: int, host: Opti
   ROUND(pv_inner * 100.0 / total_pv, 2) AS percentage,
   cumulative_percentage,
   avg_response_time,
+  p99_response_time,
   max_response_time
 FROM (
   SELECT
@@ -96,6 +98,7 @@ FROM (
     cumulative_percentage,
     LAG(cumulative_percentage) OVER (ORDER BY pv_inner DESC) AS prev_cumulative_percentage,
     avg_response_time,
+    p99_response_time,
     max_response_time
   FROM (
     SELECT
@@ -105,6 +108,7 @@ FROM (
       SUM(COUNT(*)) OVER (ORDER BY COUNT(*) DESC ROWS UNBOUNDED PRECEDING) AS cumulative_pv,
       ROUND(SUM(COUNT(*)) OVER (ORDER BY COUNT(*) DESC ROWS UNBOUNDED PRECEDING) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS cumulative_percentage,
       AVG(CAST({time_field} AS DOUBLE)) AS avg_response_time,
+      APPROX_PERCENTILE(CAST({time_field} AS DOUBLE), 0.99) AS p99_response_time,
       MAX(CAST({time_field} AS DOUBLE)) AS max_response_time
     FROM log
     GROUP BY {uri_field}
@@ -116,7 +120,92 @@ ORDER BY pv_inner DESC
 """.strip()
 
 
-def execute_sls_query(project: str, logstore: str, region: str, from_ts: int, to_ts: int, query: str) -> Dict:
+ENV_PROFILE = "ALIYUN_PROFILE"
+
+
+def resolve_profile() -> str:
+    """从环境变量 ALIYUN_PROFILE 读取 aliyun-cli profile。
+
+    不猜测、不回退到默认 profile —— 未设置即终止。
+    默认 profile 的权限范围通常与目标资源不一致，静默回退会取到错误的数据。
+    """
+    profile = os.environ.get(ENV_PROFILE, "").strip()
+    if profile:
+        return profile
+
+    print(f"错误: 环境变量 {ENV_PROFILE} 未设置。", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("本脚本不会猜测或回退到 aliyun-cli 默认 profile，请显式指定：", file=sys.stderr)
+    print(f"    export {ENV_PROFILE}=<profile 名>", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("当前机器可用的 profile：", file=sys.stderr)
+    try:
+        out = subprocess.run(["aliyun", "configure", "list"],
+                             capture_output=True, text=True, check=True).stdout
+        print(out, file=sys.stderr)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("    (无法执行 `aliyun configure list`，请确认 aliyun-cli 已安装)", file=sys.stderr)
+    print("注意: `configure list` 中的 Valid 只表示凭证格式正确，不代表有目标资源的授权。",
+          file=sys.stderr)
+    sys.exit(2)
+
+
+def classify_aliyun_error(stderr: str) -> str:
+    """把 aliyun-cli 报错翻译成可执行的修复指引。"""
+    s = stderr or ""
+    if "AccessKeyId not found" in s:
+        return ("AccessKey 已被删除或轮换，凭证本身已失效。\n"
+                f"    修复: aliyun configure --profile $" + ENV_PROFILE)
+    if "denied by sts or ram" in s or "Forbidden" in s:
+        return ("凭证有效，但 RAM 未授予所需权限。\n"
+                "    修复: 为该 RAM 用户/角色补上 AliyunLogReadOnlyAccess，"
+                "或针对目标 project 单独授予 log:GetLogStoreLogs。")
+    if "InvalidAccessKeySecret" in s or "SignatureDoesNotMatch" in s:
+        return ("AccessKey Secret 不匹配。\n"
+                f"    修复: aliyun configure --profile $" + ENV_PROFILE)
+    if "ProjectNotExist" in s or "LogStoreNotExist" in s:
+        return "project 或 logstore 名称不存在，请核对配置。"
+    return "请根据上方原始错误排查。"
+
+
+def preflight_sls(project: str, logstore: str, region: str, profile: str) -> None:
+    """对目标 project/logstore 打一次最小查询，确认「凭证 + 授权」双通过。
+
+    `aliyun configure list` 只能确认凭证格式，无法确认授权，因此必须实打一次。
+    校验不通过直接终止，不进入下一步。
+    """
+    import time
+    now = int(time.time())
+    cmd = [
+        "aliyun", "sls", "GetLogs",
+        "--project", project,
+        "--logstore", logstore,
+        "--region", region,
+        "--from", str(now - 3600),
+        "--to", str(now),
+        "--line", "1",
+        "--profile", profile,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        print("错误: 未找到 aliyun-cli，请先安装。", file=sys.stderr)
+        sys.exit(2)
+    except subprocess.CalledProcessError as e:
+        print("=" * 72, file=sys.stderr)
+        print(f"权限校验失败 — profile={profile} 无法读取 {region}/{project}/{logstore}",
+              file=sys.stderr)
+        print("=" * 72, file=sys.stderr)
+        print((e.stderr or "").strip(), file=sys.stderr)
+        print("", file=sys.stderr)
+        print("原因: " + classify_aliyun_error(e.stderr), file=sys.stderr)
+        print("", file=sys.stderr)
+        print("校验未通过，已终止（不会继续执行统计查询）。", file=sys.stderr)
+        sys.exit(2)
+
+
+def execute_sls_query(project: str, logstore: str, region: str, from_ts: int, to_ts: int,
+                      query: str, profile: str) -> Dict:
     """执行 SLS 查询"""
     cmd = [
         "aliyun", "sls", "GetLogs",
@@ -127,6 +216,7 @@ def execute_sls_query(project: str, logstore: str, region: str, from_ts: int, to
         "--to", str(to_ts),
         "--line", "100",
         "--query", query,
+        "--profile", profile,
     ]
 
     try:
@@ -169,30 +259,45 @@ def print_markdown_result(result: Dict, days: int, threshold: int, format_name: 
     print(f"## {title} - {datetime.now().strftime('%Y-%m-%d')}\n")
     print(f"> 统计范围：最近 {days} 天 | 数据来源：SLS ({format_name} 格式) | 分析方法：帕累托（前{threshold}%流量）\n")
 
-    print("| 接口 | PV/天 | 占比 | 累计占比 | 平均响应时间 | 最大响应时间 |")
-    print("|------|-------|------|----------|--------------|--------------|")
+    print("| 接口 | PV/天 | 占比 | 累计占比 | 平均响应时间 | P99响应时间 | 最大响应时间 |")
+    print("|------|-------|------|----------|--------------|-------------|--------------|")
 
+    def _num(v):
+        if v == 'null' or v is None:
+            return 0.0
+        return float(v)
+
+    tail_flags = []  # (uri, p99, avg, ratio) 长尾告警行
     for log in logs:
         uri = log.get("request_uri", "N/A")
         pv_per_day = format_number(float(log.get("pv_per_day", 0)))
         percentage = f"{log.get('percentage', 0)}%"
         cumulative_percentage = f"{log.get('cumulative_percentage', 0)}%"
-        avg_time_val = log.get('avg_response_time', 0)
-        if avg_time_val == 'null' or avg_time_val is None:
-            avg_time_val = 0
-        avg_time = f"{float(avg_time_val):.2f}"
-        max_time_val = log.get('max_response_time', 0)
-        if max_time_val == 'null' or max_time_val is None:
-            max_time_val = 0
-        max_time = f"{float(max_time_val):.2f}"
+        avg_time_val = _num(log.get('avg_response_time', 0))
+        p99_time_val = _num(log.get('p99_response_time', 0))
+        max_time_val = _num(log.get('max_response_time', 0))
+        avg_time = f"{avg_time_val:.2f}"
+        p99_time = f"{p99_time_val:.2f}"
+        max_time = f"{max_time_val:.2f}"
 
-        print(f"| {uri} | {pv_per_day} | {percentage} | {cumulative_percentage} | {avg_time} | {max_time} |")
+        # 长尾判定（约定见 SKILL.md「P99 判定规则」）：
+        # P99 >= 500ms 且 P99 >= 3x 均值 才计入长尾告警，避免把普通抖动也标红
+        if p99_time_val >= 0.5 and avg_time_val > 0 and p99_time_val >= avg_time_val * 3:
+            ratio = p99_time_val / avg_time_val
+            tail_flags.append((uri, p99_time_val, avg_time_val, ratio))
+
+        print(f"| {uri} | {pv_per_day} | {percentage} | {cumulative_percentage} | {avg_time} | {p99_time} | {max_time} |")
 
     print("\n**汇总**")
     print(f"- 总 PV：{format_number(total_pv)}")
     print(f"- 上榜接口数：{len(logs)} 个")
     print(f"- 处理日志行数：{format_number(total_processed)}")
     print(f"- 前 {threshold}% 流量集中在以上接口")
+
+    if tail_flags:
+        print("\n**⚠️ 长尾告警（P99 ≥ 500ms 且 P99 ≥ 3× 均值）**")
+        for uri, p99, avg, ratio in sorted(tail_flags, key=lambda x: -x[1]):
+            print(f"- `{uri}`：P99 {p99:.2f}s，均值 {avg:.2f}s（{ratio:.0f}× 均值）")
 
 
 def list_formats():
@@ -259,13 +364,11 @@ def main():
             print("=" * 80)
             return
 
-        # 检查 aliyun-cli 配置
-        try:
-            subprocess.run(["aliyun", "configure", "list"], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("错误: aliyun-cli 未配置或未安装。", file=sys.stderr)
-            print("请执行: aliyun configure", file=sys.stderr)
-            sys.exit(1)
+        # 解析 profile（仅从 ALIYUN_PROFILE 取，缺失即终止）
+        profile = resolve_profile()
+
+        # 权限校验门禁：对目标资源实打一次最小查询，不通过则终止，不进入下一步
+        preflight_sls(args.project, args.logstore, args.region, profile)
 
         # 执行查询
         result = execute_sls_query(
@@ -275,6 +378,7 @@ def main():
             from_ts=from_ts,
             to_ts=to_ts,
             query=query,
+            profile=profile,
         )
 
         # 输出结果

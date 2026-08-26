@@ -14,11 +14,17 @@ description: 查询 Sentry 指定项目的异常事件并按指定格式输出 M
 | `projects`  | 项目前缀或项目列表，例如 `"kjs_*"`（通配符模式）或 `["kjs_product", "kjs_kf"]`（枚举模式） | 是   | -      |
 | `threshold` | 异常事件阈值，仅输出 >= threshold 事件数的异常事件                                         | 否   | 100    |
 | `title`     | 项目标题                                                                                   | 否   | -      |
+| `period`    | 查询时间窗口：`24h` / `7d` / `14d` / `30d` / `90d`                                          | 否   | 30d    |
+
+> ⚠️ `period` 必须在报告里显式声明。它与 SLS/慢日志的 `days`、云效的 `range` 往往不同，
+> 不标注会让读者把不同窗口的数字当成同一口径。
 
 
 ## 前置须知
 
-**Sentry API 限制**：组织级别（不传 `projectSlugOrId`）的 `list_issues` 查询常返回空结果。必须逐 project 调用。
+**Sentry API 限制**：组织级别（不传 `projectSlugOrId`）的 `search_issues` 查询常返回空结果。必须逐 project 调用。
+
+> ⚠️ 工具名是 `mcp__sentry__search_issues`。**不存在 `mcp__sentry__list_issues`**，写错会直接调用失败。
 
 ## 执行步骤
 
@@ -30,8 +36,19 @@ description: 查询 Sentry 指定项目的异常事件并按指定格式输出 M
 - 如果 projects 是具体列表，直接使用
 - 记录每个项目 slug 与其所属分组的关系
 
+**模式匹配规则**：`*` 匹配任意字符，其余字符**字面匹配**。
+`_` 与 `-` **不等价** —— `kjs_*` 不会匹配 `kjs-auto-grab-py`、`kjs-h5-path-vue`。
+若需同时覆盖两种命名，配置里写两条：`kjs_*` 与 `kjs-*`。
+
+> `find_projects` 单次最多返回 25 条。项目数超过 25 时必须用 `query` 参数分批检索
+> （如 `query="kjs"`），否则会静默漏掉项目。
+
 ### 3. 逐项目获取 Issues
-对每个项目 slug 调用 `mcp__sentry__list_issues`，参数为 `query="is:unresolved"`、`sort="freq"`、`limit=100`
+对每个项目 slug 调用 `mcp__sentry__search_issues`，参数为：
+- `organizationSlug`、`regionUrl`（取自 Step 1）
+- `projectSlugOrId`（取自 Step 2）
+- `query="is:unresolved"`、`sort="freq"`、`limit=100`
+- `period`（默认 `30d`，由调用方传入；需与报告中声明的时间窗口一致）
 - 若某项目无 issue，跳过
 - 将返回的 issue 带上对应的项目名一起收集
 
@@ -39,6 +56,17 @@ description: 查询 Sentry 指定项目的异常事件并按指定格式输出 M
 遍历所有获取到的 issue，按事件数分类：
 - **>= threshold**：进入表格展示，标记 high/medium 优先级
 - **< threshold**：不计入表格，累计 low 列的 Issue 数和总事件数用于汇总统计
+
+**截断处理与 LOW 计数口径（重要）**
+
+`search_issues` 的 `limit` 上限为 100，且**无分页参数**。若某项目返回条数 == limit，说明结果已被截断：
+
+1. 取最后一条的事件数 `X`，追加一次 `query="is:unresolved timesSeen:<X"` 继续下探，
+   直到返回条数 < limit，或已确认低于 threshold 的部分不再需要精确计数
+2. LOW（< threshold）一栏必须标注为**「采样窗口内实测」**，并在报告末尾声明实际低频 issue 可能更多
+3. **不得**把截断后的计数当作全量上报
+
+> `timesSeen:<X` 里的 `<` 必须是裸字符。
 
 ### 5. 排序
 按事件数量降序排列（仅展示 >= threshold 的行）
@@ -58,7 +86,8 @@ description: 查询 Sentry 指定项目的异常事件并按指定格式输出 M
 
 ## 异常处理
 
-- 若 `list_issues` 返回 400 错误（查询语法无效），去掉多余 flag 后重试。只使用 `is:unresolved`，不要加 `is:open`
+- 若 `search_issues` 返回 400 错误（查询语法无效），去掉多余 flag 后重试。只使用 `is:unresolved`，不要加 `is:open`
+- 查询串里的 `<` `>` 必须是**裸字符**，不能写成 HTML 实体（`&lt;` 会报 `Invalid number`）
 - 若某个项目查询失败，记录该项目的错误并跳过，继续查询其余项目
 - 所有项目查询均失败时，输出"Sentry 数据获取失败"而非让工具挂起
 - 连接超时或长时间无响应时，尝试降低 `limit` 参数值（如改为 50）

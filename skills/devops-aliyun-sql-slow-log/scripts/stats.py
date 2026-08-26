@@ -11,6 +11,7 @@
 """
 
 import json
+import os
 import sys
 import subprocess
 import time
@@ -44,6 +45,93 @@ def format_number(num) -> str:
     return f"{num:,.0f}" if isinstance(num, (int, float)) and num.is_integer() else f"{num:,.2f}"
 
 
+ENV_PROFILE = "ALIYUN_PROFILE"
+
+
+def resolve_profile() -> str:
+    """从环境变量 ALIYUN_PROFILE 读取 aliyun-cli profile。
+
+    不猜测、不回退到默认 profile —— 未设置即终止。
+    默认 profile 的权限范围通常与目标实例不一致，静默回退会取到错误的数据。
+    """
+    profile = os.environ.get(ENV_PROFILE, "").strip()
+    if profile:
+        return profile
+
+    print(f"错误: 环境变量 {ENV_PROFILE} 未设置。", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("本脚本不会猜测或回退到 aliyun-cli 默认 profile，请显式指定：", file=sys.stderr)
+    print(f"    export {ENV_PROFILE}=<profile 名>", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("当前机器可用的 profile：", file=sys.stderr)
+    try:
+        out = subprocess.run(["aliyun", "configure", "list"],
+                             capture_output=True, text=True, check=True).stdout
+        print(out, file=sys.stderr)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("    (无法执行 `aliyun configure list`，请确认 aliyun-cli 已安装)", file=sys.stderr)
+    print("注意: `configure list` 中的 Valid 只表示凭证格式正确，不代表有目标资源的授权。",
+          file=sys.stderr)
+    sys.exit(2)
+
+
+def classify_aliyun_error(stderr: str) -> str:
+    """把 aliyun-cli 报错翻译成可执行的修复指引。"""
+    s = stderr or ""
+    if "AccessKeyId not found" in s:
+        return ("AccessKey 已被删除或轮换，凭证本身已失效。\n"
+                "    修复: aliyun configure --profile $" + ENV_PROFILE)
+    if "denied by sts or ram" in s or "Forbidden" in s or "NoPermission" in s:
+        return ("凭证有效，但 RAM 未授予所需权限。\n"
+                "    修复: 为该 RAM 用户/角色补上 AliyunRDSReadOnlyAccess，"
+                "或针对目标实例单独授予 rds:DescribeSlowLogRecords。")
+    if "InvalidAccessKeySecret" in s or "SignatureDoesNotMatch" in s:
+        return ("AccessKey Secret 不匹配。\n"
+                "    修复: aliyun configure --profile $" + ENV_PROFILE)
+    if "InvalidDBInstanceId" in s or "NotFound" in s:
+        return "RDS 实例 ID 不存在或不在该地域，请核对 instance-id 与 region。"
+    if "not found" in s and "plugin" in s.lower():
+        return ("aliyun-cli-rds 插件未安装。\n"
+                "    修复: aliyun plugin install --names aliyun-cli-rds && hash -r")
+    return "请根据上方原始错误排查。"
+
+
+def preflight_rds(instance_id: str, region: str, profile: str) -> None:
+    """对目标实例打一次最小慢日志查询，确认「凭证 + 授权 + 插件」三者均就绪。
+
+    `aliyun configure list` 只能确认凭证格式，无法确认授权，因此必须实打一次。
+    校验不通过直接终止，不进入下一步。
+    """
+    now = int(time.time())
+    dt_to = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    dt_from = datetime.fromtimestamp(now - 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    cmd = [
+        "aliyun", "rds", "describe-slow-log-records",
+        "--region", region,
+        "--db-instance-id", instance_id,
+        "--start-time", dt_from,
+        "--end-time", dt_to,
+        "--page-size", "30",
+        "--profile", profile,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        print("错误: 未找到 aliyun-cli，请先安装。", file=sys.stderr)
+        sys.exit(2)
+    except subprocess.CalledProcessError as e:
+        print("=" * 72, file=sys.stderr)
+        print(f"权限校验失败 — profile={profile} 无法读取 {region}/{instance_id} 的慢日志",
+              file=sys.stderr)
+        print("=" * 72, file=sys.stderr)
+        print((e.stderr or "").strip(), file=sys.stderr)
+        print("", file=sys.stderr)
+        print("原因: " + classify_aliyun_error(e.stderr), file=sys.stderr)
+        print("", file=sys.stderr)
+        print("校验未通过，已终止（不会继续执行统计查询）。", file=sys.stderr)
+        sys.exit(2)
+
+
 def call_rds_api(
     instance_id: str,
     region: str,
@@ -51,6 +139,7 @@ def call_rds_api(
     end_time: str,
     db_name: Optional[str] = None,
     page_size: int = 100,
+    profile: str = "",
 ) -> Dict:
     """调用 RDS describe-slow-log-records API"""
     cmd = [
@@ -63,6 +152,8 @@ def call_rds_api(
     ]
     if db_name:
         cmd.extend(["--db-name", db_name])
+    if profile:
+        cmd.extend(["--profile", profile])
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -222,14 +313,6 @@ def main():
         parser.print_help()
         return
 
-    # 检查 aliyun-cli 配置
-    try:
-        subprocess.run(["aliyun", "configure", "list"], capture_output=True, check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("错误: aliyun-cli 未配置或未安装。", file=sys.stderr)
-        print("请执行: aliyun configure", file=sys.stderr)
-        sys.exit(1)
-
     # 确保 rds 插件已加载
     try:
         subprocess.run(["hash", "-r"], capture_output=True, check=True)
@@ -251,6 +334,12 @@ def main():
         print("=" * 80)
         return
 
+    # 解析 profile（仅从 ALIYUN_PROFILE 取，缺失即终止）
+    profile = resolve_profile()
+
+    # 权限校验门禁：对目标实例实打一次最小查询，不通过则终止，不进入下一步
+    preflight_rds(args.instance_id, args.region, profile)
+
     # 调用 API
     resp = call_rds_api(
         instance_id=args.instance_id,
@@ -259,6 +348,7 @@ def main():
         end_time=dt_to,
         db_name=args.db_name,
         page_size=args.page_size,
+        profile=profile,
     )
 
     records = resp.get("Items", {}).get("SQLSlowRecord", [])

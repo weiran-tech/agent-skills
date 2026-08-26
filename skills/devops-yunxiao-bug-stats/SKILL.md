@@ -36,6 +36,12 @@ description: 获取云效项目中「线上故障」类型工作项的统计数�
 | 正常结束 | `4`  |
 | 异常结束 | `5`  |
 
+## 查询约定
+
+- **计数查询一律用 `perPage: 0`**：返回 `items: []` 且 `pagination.total` 有效，
+  避免每次带回一条完整 item 的无效 payload。
+- 只有需要明细清单时才用 `perPage: 200`，且配 `includeDetails: false`。
+
 ## advancedConditions 模板
 
 使用 `advancedConditions` 组合查询条件，直接从服务端获取统计数量, **注意**：advancedConditions 的值是 json 字符串, 并非 json 对象
@@ -109,7 +115,7 @@ uv run scripts/stats.py --parse-days "<range>"
 
 ```
 mcp__yunxiao__search_workitems(
-    organizationId, spaceId, category: Bug, perPage: 1, includeDetails: false,
+    organizationId, spaceId, category: Bug, perPage: 0, includeDetails: false,
     advancedConditions: '...'
 )
 → pagination.total = 未解决线上故障总数
@@ -125,7 +131,7 @@ mcp__yunxiao__search_workitems(
 
 ```
 mcp__yunxiao__search_workitems(
-    organizationId, spaceId: '<space_id>', category: Bug, perPage: 1, includeDetails: false,
+    organizationId, spaceId: '<space_id>', category: Bug, perPage: 0, includeDetails: false,
     advancedConditions: '...'
 )
 → pagination.total = 范围内创建的线上故障总数
@@ -143,7 +149,7 @@ mcp__yunxiao__search_workitems(
 
 ```
 mcp__yunxiao__search_workitems(
-    organizationId, spaceId: '<space_id>', category: Bug, perPage: 1, includeDetails: false,
+    organizationId, spaceId: '<space_id>', category: Bug, perPage: 0, includeDetails: false,
     advancedConditions: '...'
 )
 → pagination.total = 范围内关闭的线上故障总数
@@ -160,12 +166,16 @@ mcp__yunxiao__search_workitems(
 ```
 mcp__yunxiao__search_workitems(
     organizationId, spaceId: '<space_id>', category: Bug,
-    perPage: 200, includeDetails: true,
+    perPage: 200, includeDetails: false,
     advancedConditions: '...'
 )
 ```
 
 若 `total > 200`，仅展示第一页内的清单并注明范围限制。
+
+> ⚠️ **必须 `includeDetails: false`。** 清单所需的 `priority` / `seriousLevel` 已在
+> `customFieldValues` 基础字段中返回；置 `true` 会额外拉取全部描述正文 ——
+> 实测 61 条即达 123,348 字符，超出工具返回上限被迫落盘再解析。
 
 **共 1 次 MCP 调用**
 
