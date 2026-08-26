@@ -36,6 +36,13 @@ description: 获取云效项目中需求评审结果统计
 
 
 
+## 查询约定
+
+- **计数查询一律用 `perPage: 0`**：返回 `items: []` 且 `pagination.total` 有效，
+  避免每次带回一条完整 item。本技能有 10 次计数调用，收益显著。
+- 只有需要明细清单时才用 `perPage: 200`，且配 `includeDetails: false`
+  （`priority` 等字段在基础响应中已返回）。
+
 ## advancedConditions 模板
 
 仅仅使用 : advancedConditions 来组合查询状态和类型, **注意**：advancedConditions 是 json 字符串, 并非 json 对象
@@ -113,7 +120,7 @@ uv run scripts/stats.py --parse-days "<range>"
 
 ```
 mcp__yunxiao__search_workitems(
-    organizationId, spaceId, category: Req, perPage: 1, includeDetails: false,
+    organizationId, spaceId, category: Req, perPage: 0, includeDetails: false,
     advancedConditions: '...'
 )
 → pagination.total = 产品类待处理总数
@@ -130,7 +137,7 @@ mcp__yunxiao__search_workitems(
 mcp__yunxiao__search_workitems(
     organizationId, spaceId: '<space_id>', category: Req,
     advancedConditions: '<advanced_conditions_json>',
-    perPage: 1, includeDetails: false
+    perPage: 0, includeDetails: false
 )
 → pagination.total = 该产品类创建数
 ```
@@ -140,14 +147,17 @@ advancedConditions 中使用创建时间日期范围查询
 
 ### Step 4：关闭于范围内数量
 
-将两种类型 + 两个 statusStage 合并，单次查询即可, advancedConditions 中使用 gmtStatusChanged BETWEEN 查询
+**关闭口径（固定，勿凭感觉取）**：`status IN (100014 已完成, 141230 已取消)`。
+`100085 已关闭` **不计入** —— 如需变更口径，必须同时改这里和输出表的表头说明。
+
+将两种类型 + 两个状态合并，单次查询即可, advancedConditions 中使用 gmtStatusChanged BETWEEN 查询
 
 
 ```
 mcp__yunxiao__search_workitems(
     organizationId, spaceId: '<space_id>', category: Req,
     advancedConditions: '<advanced_conditions_json>',
-    perPage: 1, includeDetails: false
+    perPage: 0, includeDetails: false
 )
 → pagination.total = 两类合计关闭总数
 ```
@@ -163,7 +173,7 @@ mcp__yunxiao__search_workitems(
 ```
 mcp__yunxiao__search_workitems(
     organizationId, spaceId: '<space_id>', category: Req,
-    perPage: 1, includeDetails: false,
+    perPage: 0, includeDetails: false,
     advancedConditions: '...'
 )
 → pagination.total = 待处理总数（近似上限）
@@ -174,12 +184,15 @@ mcp__yunxiao__search_workitems(
 ```
 mcp__yunxiao__search_workitems(
     organizationId, spaceId: '<space_id>', category: Req,
-    perPage: 200, includeDetails: true,
+    perPage: 200, includeDetails: false,
     advancedConditions: '...'
 )
 ```
 
 若 total > 200，仅展示第一页内的清单并注明范围限制。
+
+> ⚠️ **必须 `includeDetails: false`。** 清单所需的 `priority` 已在 `customFieldValues`
+> 基础字段中返回；置 `true` 会额外拉取全部需求描述正文，极易超出工具返回上限。
 
 ---
 

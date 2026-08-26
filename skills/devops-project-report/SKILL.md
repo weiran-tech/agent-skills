@@ -13,8 +13,20 @@ compatibility: Python 3.8+, uv
 | 参数         | 类型   | 必填 | 默认值       | 说明                                                                                                                                                          |
 | ------------ | ------ | ---- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `project`    | string | 是   | -            | 项目名称，如 "氪金兽"                                                                                                                                         |
-| `type`       | string | 否   | 全部启用类型 | 内容类型，逗号分隔，如 "req,bugs,sentry,sls,sql"                                                                                                              |
-| `type:param` | string | 否   | 灵活参数     | 替换不同类型的参数，如 "sls:threshold" 会覆盖掉项目配置中 sls 中的 threshold 参数, sls[host=host.com] 会搜索项目配置中 sls 中的 host 参数 = 'host.com' 的条目 |
+| `type`       | string | 否   | 全部启用类型 | 内容类型，逗号分隔。可选值：`req` / `bugs` / `sentry` / `sls` / `slow_log`                                                                                     |
+| `type:param` | string | 否   | -            | 覆盖或过滤某类型的配置项，语法见下                                                                                                                            |
+
+### `type:param` 语法
+
+| 形式 | 含义 | 示例 |
+| --- | --- | --- |
+| `{type}:{key}={value}` | 覆盖该类型**所有**条目的 key | `sls:threshold=75` |
+| `{type}[{key}={value}]` | 只保留 key 匹配的条目 | `sls[name=www]` |
+
+- 两者可同时出现，**先过滤（`[]`）再覆盖（`:`）**
+  `sls[name=www] sls:threshold=90` = 只跑 www 条目，且阈值改为 90
+- 同一 type 可写多个 `[]`，条件之间为 AND
+- 过滤后无条目命中：输出 `⏭ 跳过: {type} (过滤条件无匹配条目)`，不报错
 
 ## 使用示例
 
@@ -37,6 +49,37 @@ compatibility: Python 3.8+, uv
 
 ## 执行流程
 
+### Step 0: 前置门禁（涉及 sls / slow_log 时必须先过）
+
+若本次启用的类型包含 `sls` 或 `slow_log`，**在采集任何数据之前**先校验阿里云凭证：
+
+1. **profile 只从环境变量取**
+
+   ```bash
+   echo "${ALIYUN_PROFILE:?ALIYUN_PROFILE 未设置}"
+   ```
+
+   `ALIYUN_PROFILE` 未设置时：输出下面这段提示并**终止整个流程**，不要继续跑云效/Sentry，
+   也**不要**替用户从 `aliyun configure list` 里挑一个 profile：
+
+   ```
+   ❌ 环境变量 ALIYUN_PROFILE 未设置，无法采集 sls / slow_log。
+      请先执行: export ALIYUN_PROFILE=<profile 名>
+      可用 profile: <aliyun configure list 的输出>
+      注意: Valid 只表示凭证格式正确，不代表有目标资源的授权。
+   ```
+
+2. **授权校验实打一次**
+
+   对本次配置里**每个** sls / slow_log 条目的目标资源各打一次最小查询
+   （由子技能脚本自动完成，exit 2 即失败）。任一条目校验失败：
+   - 记录该条目的失败原因与修复指引
+   - 该条目标记为失败，**不再重试、不换 profile 试**
+   - 其余条目与其他类型继续执行
+
+> 为什么必须实打：`aliyun configure list` 只校验凭证格式。实测两个 profile 均显示
+> `Valid`，但一个无 SLS 权限、一个 AccessKey 已失效 —— 只看 `Valid` 会一路跑到 401。
+
 ### Step 1: 读取配置文件
 
 使用 Read 工具读取项目配置文件：
@@ -56,7 +99,7 @@ compatibility: Python 3.8+, uv
 | -------- | ---------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
 | bugs     | 线上故障   | `/devops-yunxiao-bug-stats space_id={space_id} range={range}`                                | —                                  |
 | req      | 需求统计   | `/devops-yunxiao-req-stats space_id={space_id} range={range}`                                | —                                  |
-| sentry   | Sentry异常 | 按分组逐组调用 `/devops-sentry-exception projects={projects} title={项目名}-{分组名}` | 多分组循环执行                     |
+| sentry   | Sentry异常 | 按分组逐组调用 `/devops-sentry-exception projects={projects} title={项目名}-{分组名} period={sentry.period}` | 多分组循环执行                     |
 | sls      | 高频接口   | `/devops-aliyun-sls-stats {sls 段落配置, 除 name 参数外, 所有参数均透传}`                    | 每条配置独立执行，为空则跳过该条目 |
 | slow_log | SQL慢日志  | `/devops-aliyun-sql-slow-log {slow_log 段落配置, 除 name 参数外, 所有参数均透传}`            | 每条配置独立执行，为空则跳过该条目 |
 
@@ -67,11 +110,11 @@ compatibility: Python 3.8+, uv
 执行每个数据源时，实时输出阶段化进度信息：
 
 ```
-[1/5] 查询线上故障统计... ✓ 完成 (120ms) - 共 50 个故障，21 个未解决
-[2/5] 查询需求生命周期统计... ✓ 完成 (95ms) - 共 258 个工作项，146 个需求
-[3/5] 查询 Sentry 异常统计... ✓ 完成 (3200ms) - 前端(kejinshou-nuxt-h5): 15 个 HIGH; Java(kjs_product): 3 个问题; ...
-[4/5] 查询 SLS 接口高频统计... ✓ 完成 (2340ms) - www(10 个接口), api(7 个接口), m(静态资源为主)
-[5/5] 查询 SQL 慢日志统计... ✗ 无数据 (kjs-notify 无慢 SQL，其余 2 个实例共 5 个 SQLHash)
+[1/5] 查询线上故障统计... ✓ 完成 ({耗时}ms) - 共 {N} 个故障，{N} 个未解决
+[2/5] 查询需求生命周期统计... ✓ 完成 ({耗时}ms) - 共 {N} 个工作项，{N} 个需求
+[3/5] 查询 Sentry 异常统计... ✓ 完成 ({耗时}ms) - {分组}: {N} 个 HIGH; ...
+[4/5] 查询 SLS 接口高频统计... ✗ 权限校验失败 ({耗时}ms) - {profile} 无 log:GetLogStoreLogs
+[5/5] 查询 SQL 慢日志统计... ✓ 完成 ({耗时}ms) - {N} 个 SQLHash，TOP1 {N}ms
 ```
 
 **每条进度包含：**
@@ -79,6 +122,20 @@ compatibility: Python 3.8+, uv
 - 结果状态：✓ 成功 / ✗ 无数据 / ⚠ 部分失败
 - 耗时（毫秒）
 - 关键指标摘要（如未解决数、总事件数、接口数等）
+
+**耗时采集方式（强制）**
+
+macOS 的 BSD `date` 不支持 `%N`，用 python3 取毫秒：
+
+```bash
+_t0=$(python3 -c 'import time;print(int(time.time()*1000))')
+# ... 执行查询 ...
+echo "耗时: $(( $(python3 -c 'import time;print(int(time.time()*1000))') - _t0 ))ms"
+```
+
+> ⚠️ **禁止填写估算耗时。** 未实际计时的步骤，进度行与 execution.log 中一律写
+> `耗时: 未计时`；Summary 的 `总耗时` 若无真实数据则整项省略。
+> 本文档中所有示例耗时均为占位，**不得照抄进报告**。
 
 ### Step 2.6: 跳过低配模块
 
@@ -94,7 +151,18 @@ compatibility: Python 3.8+, uv
 
 ### Step 3: 生成报告文件
 
-**输出目录**：`projects/{project}/QA/{MM-DD-HH-MM}/`（不存在则自动创建，时间戳使用当前执行时间，精确到分钟）
+**输出目录**：`projects/{project}/QA/{YYYY-MM-DD}/`
+
+- 目录不存在则创建；**已存在则保留**，只覆盖本次执行实际涉及的类型文件
+- `Summary.md` 与 `execution.log` 每次重写
+
+> 🚫 **禁止 `rm -rf` 输出目录。**
+> 按 `type` 补采是常规操作（例如权限修复后重跑 `type=sls`）。若先删目录，
+> 会连带删掉本次未请求的其他类型上次生成的文件 —— 这与「未请求的类型不生成文件」
+> 叠加就是静默丢数据。
+>
+> 补采时 `Summary.md` 必须标注每个类型的数据来自本次采集还是沿用上次，
+> 沿用的附上次采集时间，例如：`| 线上故障 | 当月 | ♻️ 沿用 2026-08-25 10:49 | ... |`
 
 **输出规则**：每种数据采集类型独立保存为一个 `.md` 文件
 
@@ -106,7 +174,7 @@ compatibility: Python 3.8+, uv
 | `高频接口.md`   | 接口高频统计（每个 name 一个小节）  |
 | `SQL慢日志.md`  | slow log 统计（每个 name 一个小节） |
 
-**文件名格式示例**：`projects/{project}/QA/{MM-DD-HH-MM}/线上故障.md`
+**文件名格式示例**：`projects/{project}/QA/{YYYY-MM-DD}/线上故障.md`
 
 **文件内容格式**：各文件仅包含对应类型的标题与数据，不合并其他类型。
 
@@ -150,29 +218,32 @@ compatibility: Python 3.8+, uv
 
 所有报告文件生成完毕后，在终端输出一个统一的汇总 Markdown 表格, 并将概览保存到：
 
-`projects/{project}/QA/{MM-DD-HH-MM}/Summary.md`
+`projects/{project}/QA/{YYYY-MM-DD}/Summary.md`
 
 
 
 ```markdown
 ## 📊 {项目名} 日报汇总 — {date}
 
-| 数据源      | 状态 | 关键指标                               |
-| ----------- | ---- | -------------------------------------- |
-| 线上故障    | ✅    | 50 个故障 · 21 未解决 · 10 已修复      |
-| 需求统计    | ✅    | 258 工作项 · 146 需求 · 积压 112       |
-| Sentry 异常 | ✅    | 14 HIGH · 累计 11M+ 事件               |
-| SLS 接口    | ✅    | www(216万PV) · api(360万调用)          |
-| SQL 慢日志  | ✅    | kjs-v3(4个SQLHash, TOP1 1.8s) · kjs-im |
+| 数据源      | 窗口      | 状态 | 关键指标                              |
+| ----------- | --------- | ---- | ------------------------------------- |
+| 线上故障    | {range}   | ✅    | {N} 未解决 · 新建 {N} · 关闭 {N}      |
+| 需求统计    | {range}   | ✅    | 积压 {N} · 新建 {N} · 关闭 {N}        |
+| Sentry 异常 | {period}  | ✅    | {N} HIGH · 累计 {N} 事件              |
+| SLS 接口    | {days} 天 | ✅    | {name}({N} 接口) · ...                |
+| SQL 慢日志  | {days} 天 | ✅    | {N} 个 SQLHash · TOP1 {N}ms           |
 
-> 报告路径: projects/{project}/QA/{MM-DD-HH-MM}/
-> 总耗时: 6.5s | 成功: 5/5 | 跳过: 0 | 失败: 0
+> 报告路径: projects/{project}/QA/{YYYY-MM-DD}/
+> 成功: {N}/{N} | 跳过: {N} | 失败: {N}
 ```
+
+> ⚠️ **窗口列必填。** 各数据源默认窗口并不一致（云效按 `range`、SLS/慢日志按 `days`、
+> Sentry 按 `period`），并排展示却不标注会被读成同一口径。
 
 若某数据源存在严重问题（HIGH 优先级的 Sentry issue ≥ 10 或 SQL 最大耗时 > 5s），在表格后用警告框标注：
 
 ```markdown
-> ⚠️ **关注:** kejinshou-vue-h5 imSocket-chat WebSocket 断开超 370 万事件
+> ⚠️ **关注:** {项目}-{issue} {简述}超 {N} 事件
 ```
 
 ### Step 5: 写执行日志
@@ -181,66 +252,72 @@ compatibility: Python 3.8+, uv
 
 ```
 ========================================
-{项目名} 报告生成 — 2026-05-12 18:42:00
+{项目名} 报告生成 — {YYYY-MM-DD HH:MM:SS}
 ========================================
+配置: projects/{项目名}/config.yaml
+组织: {organization_id}
+日期范围解析: "{range 原文}" -> label={label}, {start_iso} ~ {end_iso}
+启用模块: {本次实际执行的 type 列表}
+ALIYUN_PROFILE: {profile}（sls/slow_log 门禁已通过）
 
-[1/5] 线上故障
-  space_id: 6258e4a36f6aff30b539406206
-  range: 当月
-  ✓ 返回: 50 条故障记录 (耗时: 120ms)
-  未解决: 21 个 (待确认 2, 处理中 9, 其他 10)
-  已修复: 10 个
-  暂不修复: 1 个
-  推迟修复: 20 个
+[1/N] 线上故障
+  space_id: {space_id}
+  range: {range}
+  查询方式: search_workitems + advancedConditions (perPage=0 计数 / 200 明细)
+  ✓ 未解决: {N} (耗时: {耗时}ms)
+  ✓ {label}创建: {N}
+  ✓ {label}关闭: {N}
+  状态分布: {状态}: {N} / ...
+  优先级分布: {优先级}: {N} / ...
+  负责人 TOP3: {姓名} {N} / ...
 
-[2/5] 需求统计
-  space_id: 6258e4a36f6aff30b539406206
-  range: 当月
-  ✓ 返回: 258 个工作项 (耗时: 95ms)
-  产品类需求: 146 (待处理 112, 已完成 12)
-  技术类需求: 54 (待处理 42, 已完成 4)
+[2/N] 需求统计
+  space_id: {space_id}
+  range: {range}
+  ✓ 未评审(待处理): 产品类 {N}, 技术类 {N}
+  ✓ 待人工评审: 产品类 {N}, 技术类 {N}
+  ✓ {label}创建: 产品类 {N}, 技术类 {N}
+  ✓ {label}关闭: 产品类 {N}, 技术类 {N}   [口径: status IN (100014, 141230)]
+  ✓ 已评审待计划: 产品类 {N}, 技术类 {N}
+  共 {N} 次 MCP 调用 (耗时: {耗时}ms)
 
-[3/5] Sentry 异常统计
-  分组 1/3: 前端 - kejinshou-nuxt-h5
-    projects: [kejinshou-nuxt-h5, kejinshou-nuxt-h5-node]
-    ✓ 返回: 100 个 issue (耗时: 1200ms)
-    HIGH: 9 个 (累计 ~5.5M 事件)
-    MEDIUM: 0
-    LOW (<100): 91 个 (计入汇总)
-  分组 2/3: Java
-    ...
-  ✓ 分组合计: 168 个 issue
+[3/N] Sentry 异常统计
+  org: {slug} | regionUrl: {regionUrl}
+  查询: is:unresolved, sort=freq, period={period}, threshold={threshold}
+  分组 1/N: {分组名} — 匹配 {N} 个项目
+    {project}  ✓ {N} issue  累计 {N}  TOP {N}
+    {project}  ✗ 无 issue
+    小计: HIGH {N} ({N} 事件) / MEDIUM {N} ({N}) / LOW {N} ({N})
+  ✓ 合计: {N} issue | HIGH {N} / MEDIUM {N} / LOW {N} | 总事件 {N} (耗时: {耗时}ms)
+  采样说明: {是否触发 limit 截断、是否做了 timesSeen 下探}
 
-[4/5] SLS 接口高频统计
-  [www] host=www.kejinshou.com, days=30, threshold=70
-    ✓ 返回: 10 个接口 (耗时: 2340ms)
-    总 PV: 21,585,330
-  [api] format=mwcs, days=30, threshold=70
-    ✓ 返回: 7 个接口 (耗时: 1100ms)
-    总 PV: 138,687,720
-  [m] host=m.kejinshou.com, days=30, threshold=70
-    ✓ 返回: 静态资源为主 (耗时: 980ms)
+[4/N] SLS 接口高频统计
+  profile: {ALIYUN_PROFILE}
+  [{name}] host={host}, project={project}, logstore={logstore}, days={days}, threshold={threshold}
+    ✓ 返回: {N} 个接口 (耗时: {耗时}ms) | 总 PV: {N}
+    或
+    ✗ 权限校验失败 (exit 2): {原始错误}
+      原因: {分类结果} | 修复: {指引}
 
-[5/5] SQL 慢日志统计
-  [kjs-v3] instance=rm-bp10to8bxux58854c, db=kjs_v3, threshold=500ms
-    ✓ 返回: 4 个 SQLHash (耗时: 1500ms)
-    TOP1: 30d0258c (1,889ms, 1 次)
-  [kjs-notify] instance=rm-bp10to8bxux58854c, db=kjs_notify, threshold=500ms
-    ✗ 返回: 无数据 (耗时: 300ms)
-  [kjs-im] instance=rm-bp1r8sln5j20oyvk5, db=im_v1, threshold=500ms
-    ✓ 返回: 1 个 SQLHash (耗时: 800ms)
-    TOP1: ae28a3ea (1,159ms, 19 次)
+[5/N] SQL 慢日志统计
+  profile: {ALIYUN_PROFILE}
+  [{name}] instance={instance-id}, db={db-name}, threshold={max-time-threshold}ms, days={days}
+    ✓ 返回: {N} 个 SQLHash (耗时: {耗时}ms) | 原始记录: {N} 条
+    TOP1: {hash} ({N}ms, {N} 次)
 
 ----------------------------------------
-汇总: 生成文件 5 个 + 执行日志 1 个
-总耗时: 6.5s
+汇总: 生成文件 {N} 个 + Summary.md + execution.log
+成功: {N}/{N} | 跳过: {N} | 失败: {N}
+总耗时: {真实值，未计时则省略此行}
 ========================================
 ```
 
 执行日志字段要求：
-- 每条查询记录**参数**（source_id, range, threshold, limit 等）、**耗时**、**返回结果数**
-- 失败时记录错误原因
-- 跳过时记录原因（如 "空间 ID 缺失"）
+- 每条查询记录**参数**（source_id, range, threshold, limit, profile 等）、**耗时**、**返回结果数**
+- 失败时记录**原始错误 + 分类结果 + 修复指引**三者，不要只写"失败"
+- 跳过时记录原因（如 "space_id 缺失"、"过滤条件无匹配条目"）
+- 补采场景标注哪些类型沿用上次结果
+- **上方模板中的 `{...}` 全是占位符，必须替换为真实值；无真实值的字段写「未计时」/「无数据」，不得编造**
 
 ## 项目配置文件结构
 
@@ -257,25 +334,53 @@ projects/<项目名>/看板/          # 周会看板截图
 name: 项目名称
 space_id: 云效项目 space_id
 
-# Sentry 分组配置
-sentry:
-  分组名:
-    - 项目模式1
-    - 项目模式2
+req:
+  range: 当月          # 云效时间窗口
+bugs:
+  range: 当月
 
-# SLS 配置
+# Sentry
+sentry:
+  period: 30d          # 查询窗口: 24h / 7d / 14d / 30d / 90d
+  groups:              # 分组名 -> 项目模式列表
+    分组名:
+      - 项目模式1       # `*` 通配；`_` 与 `-` 不等价，需要都覆盖就写两条
+      - 项目模式2
+
+# SLS
 sls:
-  - name: domain
+  - name: domain       # 仅用于报告分节标题，不透传给子技能
     host: domain.com
     project: sls-project
     logstore: logstore-name
     region: cn-hangzhou
     threshold: 50
+    days: 7
 
+# RDS 慢日志
 slow_log:
-  - name: domain
+  - name: domain       # 仅用于报告分节标题，不透传给子技能
     instance-id: instance-id
+    db-name: db_name
+    region: cn-hangzhou
+    max-time-threshold: 500
+    days: 7            # 必填：东八区下缺省值会返回空数据
 ```
+
+**关于凭证**
+
+配置文件里**不放** aliyun profile。profile 一律由环境变量 `ALIYUN_PROFILE` 提供
+（见 Step 0），避免凭证选择被写死在仓库里、也避免不同机器上 profile 名不一致。
+
+**判空规则**
+
+| 模块 | 判定为「未配置、跳过」的条件 |
+| --- | --- |
+| `bugs` / `req` | 缺 `space_id` 或缺 `range` |
+| `sentry` | `sentry.groups` 缺失或为空 |
+| `sls` / `slow_log` | 列表为空；单条目缺 `project`/`logstore`（sls）或 `instance-id`（slow_log）则跳过该条目 |
+
+> `test_repos` 由 `devops-yunxiao-testcase-*` 系列技能消费，**本技能不读取**。
 
 ## 输出约定
 

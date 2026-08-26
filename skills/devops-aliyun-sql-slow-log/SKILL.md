@@ -7,17 +7,39 @@ description: 查询阿里云 RDS 数据库慢 SQL 并生成 Markdown 统计报�
 
 基于帕累托分析法输出慢 SQL 排行榜，按 SQLHash 分组聚合统计，自动识别高频慢查询和全表扫描嫌疑语句。
 
-## 前置检查
+## 前置检查（强制门禁）
 
-先确认 aliyun-cli 已配置：
+### 1. profile 只从环境变量取
+
+aliyun-cli profile **必须**由环境变量 `ALIYUN_PROFILE` 指定，脚本不猜测、不回退到默认 profile：
 
 ```bash
-aliyun configure list
+export ALIYUN_PROFILE=<profile 名>
 ```
 
-如果未配置，提示用户执行 `aliyun configure` 完成 AccessKey 配置。
+未设置时脚本直接退出（exit 2）并列出可用 profile。**不要替用户挑一个 profile 重试。**
 
-同时确保 aliyun-cli-rds 插件已安装：
+### 2. 授权校验必须实打一次
+
+`aliyun configure list` **只能确认凭证格式，不能确认授权**。实测两个 profile 均显示 `Valid`，
+但一个无 SLS 权限、一个 AccessKey 已失效 —— 仅凭 `Valid` 继续执行会拿到 401。
+
+脚本在执行统计查询前会自动对目标实例打一次最小慢日志查询（`--page-size 30`，1 小时窗口）。
+**校验不通过即终止，不进入下一步。**
+
+失败时按错误分类给出修复指引：
+
+| 错误信息 | 含义 | 修复 |
+| --- | --- | --- |
+| `denied by sts or ram` / `NoPermission` | 凭证有效，无授权 | 补 `AliyunRDSReadOnlyAccess`，或授予 `rds:DescribeSlowLogRecords` |
+| `AccessKeyId not found` | AccessKey 已删除/轮换 | `aliyun configure --profile $ALIYUN_PROFILE` |
+| `InvalidAccessKeySecret` / `SignatureDoesNotMatch` | Secret 不匹配 | `aliyun configure --profile $ALIYUN_PROFILE` |
+| `InvalidDBInstanceId` / `NotFound` | 实例 ID 或 region 不对 | 核对 config.yaml |
+| plugin `not found` | rds 插件未装 | `aliyun plugin install --names aliyun-cli-rds && hash -r` |
+
+> ⚠️ 校验失败时**不要重试、不要换 profile 试**，直接把上表对应的修复指引写进报告。
+
+### 3. rds 插件
 
 ```bash
 aliyun plugin install --names aliyun-cli-rds
