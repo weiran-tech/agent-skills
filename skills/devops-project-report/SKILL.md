@@ -3,25 +3,24 @@ name: devops-project-report
 description: 独立项目日报汇总技能。为单个项目生成独立的日报报告，支持 SLS 阈值调整，按时间戳命名输出文件。当用户提到"日报"、"项目报告"、"汇总"、"统计 bugs/req/sentry/sls"、"运行日报"、"生成报告"、"数据统计"、"线上故障统计"、"Sentry 异常统计"、"SLS 接口统计"、"需求统计"时，必须使用此技能。即使没有明确指定技能名称，只要涉及项目数据汇总和报告生成，就应该使用此技能。
 compatibility: Python 3.8+, uv
 ---
-
 # Project Report Skill
 
 为单个项目生成独立的报告，支持多种数据源（云效故障、技术需求、Sentry 异常、SLS 接口统计）。
 
 ## 参数说明
 
-| 参数         | 类型   | 必填 | 默认值       | 说明                                                                                                                                                          |
-| ------------ | ------ | ---- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `project`    | string | 是   | -            | 项目名称，如 "氪金兽"                                                                                                                                         |
-| `type`       | string | 否   | 全部启用类型 | 内容类型，逗号分隔。可选值：`req` / `bugs` / `sentry` / `sls` / `slow_log`                                                                                     |
-| `type:param` | string | 否   | -            | 覆盖或过滤某类型的配置项，语法见下                                                                                                                            |
+| 参数           | 类型   | 必填 | 默认值       | 说明                                                                                 |
+| -------------- | ------ | ---- | ------------ | ------------------------------------------------------------------------------------ |
+| `project`    | string | 是   | -            | 项目名称，如 "氪金兽"                                                                |
+| `type`       | string | 否   | 全部启用类型 | 内容类型，逗号分隔。可选值：`req` / `bugs` / `sentry` / `sls` / `slow_log` |
+| `type:param` | string | 否   | -            | 覆盖或过滤某类型的配置项，语法见下                                                   |
 
 ### `type:param` 语法
 
-| 形式 | 含义 | 示例 |
-| --- | --- | --- |
-| `{type}:{key}={value}` | 覆盖该类型**所有**条目的 key | `sls:threshold=75` |
-| `{type}[{key}={value}]` | 只保留 key 匹配的条目 | `sls[name=www]` |
+| 形式                      | 含义                               | 示例                 |
+| ------------------------- | ---------------------------------- | -------------------- |
+| `{type}:{key}={value}`  | 覆盖该类型**所有**条目的 key | `sls:threshold=75` |
+| `{type}[{key}={value}]` | 只保留 key 匹配的条目              | `sls[name=www]`    |
 
 - 两者可同时出现，**先过滤（`[]`）再覆盖（`:`）**
   `sls[name=www] sls:threshold=90` = 只跑 www 条目，且阈值改为 90
@@ -68,11 +67,11 @@ compatibility: Python 3.8+, uv
       可用 profile: <aliyun configure list 的输出>
       注意: Valid 只表示凭证格式正确，不代表有目标资源的授权。
    ```
-
 2. **授权校验实打一次**
 
    对本次配置里**每个** sls / slow_log 条目的目标资源各打一次最小查询
    （由子技能脚本自动完成，exit 2 即失败）。任一条目校验失败：
+
    - 记录该条目的失败原因与修复指引
    - 该条目标记为失败，**不再重试、不换 profile 试**
    - 其余条目与其他类型继续执行
@@ -83,10 +82,12 @@ compatibility: Python 3.8+, uv
 ### Step 1: 读取配置文件
 
 使用 Read 工具读取项目配置文件：
+
 - `projects/{项目名}/config.yaml` - 项目独立配置(标准布局:`<仓库根>/projects/<项目名>/config.yaml`)
 - 根据类型读取默认配置项
 
 **配置过滤规则**：
+
 1. 根据 `project` 参数读取对应的项目配置文件
 2. 若传入 `type` 参数，只保留指定的类型；否则使用**所有非空**的模块（只要 sentry/sls 配置非空就执行）
 3. 若传入 `type:param` 参数，根据参数替换对应类型的配置
@@ -95,15 +96,13 @@ compatibility: Python 3.8+, uv
 
 根据过滤后的类型，依次调用对应的技能收集数据：
 
-| 类型     | 标题       | 技能调用                                                                              | 特殊处理                           |
-| -------- | ---------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
-| bugs     | 线上故障   | `/devops-yunxiao-bug-stats space_id={space_id} range={range}`                                | —                                  |
-| req      | 需求统计   | `/devops-yunxiao-req-stats space_id={space_id} range={range}`                                | —                                  |
-| sentry   | Sentry异常 | 按分组逐组调用 `/devops-sentry-exception projects={projects} title={项目名}-{分组名} period={sentry.period}` | 多分组循环执行                     |
-| sls      | 高频接口   | `/devops-aliyun-sls-stats {sls 段落配置, 除 name 参数外, 所有参数均透传}`                    | 每条配置独立执行，为空则跳过该条目 |
-| slow_log | SQL慢日志  | `/devops-aliyun-sql-slow-log {slow_log 段落配置, 除 name 参数外, 所有参数均透传}`            | 每条配置独立执行，为空则跳过该条目 |
-
-
+| 类型     | 标题       | 技能调用                                                                                                      | 特殊处理                           |
+| -------- | ---------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| bugs     | 线上故障   | `/devops-yunxiao-bug-stats space_id={space_id} range={range}`                                               | —                                 |
+| req      | 需求统计   | `/devops-yunxiao-req-stats space_id={space_id} range={range}`                                               | —                                 |
+| sentry   | Sentry异常 | 按分组逐组调用`/devops-sentry-exception projects={projects} title={项目名}-{分组名} period={sentry.period}` | 多分组循环执行                     |
+| sls      | 高频接口   | `/devops-aliyun-sls-stats {sls 段落配置, 除 name 参数外, 所有参数均透传}`                                   | 每条配置独立执行，为空则跳过该条目 |
+| slow_log | SQL慢日志  | `/devops-aliyun-sql-slow-log {slow_log 段落配置, 除 name 参数外, 所有参数均透传}`                           | 每条配置独立执行，为空则跳过该条目 |
 
 ### Step 2.5: 进度反馈与耗时统计
 
@@ -118,6 +117,7 @@ compatibility: Python 3.8+, uv
 ```
 
 **每条进度包含：**
+
 - 序号/总数、名称
 - 结果状态：✓ 成功 / ✗ 无数据 / ⚠ 部分失败
 - 耗时（毫秒）
@@ -154,7 +154,7 @@ echo "耗时: $(( $(python3 -c 'import time;print(int(time.time()*1000))') - _t0
 **输出目录**：`projects/{project}/QA/{YYYY-MM-DD}/`
 
 - 目录不存在则创建；**已存在则保留**，只覆盖本次执行实际涉及的类型文件
-- `Summary.md` 与 `execution.log` 每次重写
+- `execution.log` 每次重写
 
 > 🚫 **禁止 `rm -rf` 输出目录。**
 > 按 `type` 补采是常规操作（例如权限修复后重跑 `type=sls`）。若先删目录，
@@ -166,8 +166,8 @@ echo "耗时: $(( $(python3 -c 'import time;print(int(time.time()*1000))') - _t0
 
 **输出规则**：每种数据采集类型独立保存为一个 `.md` 文件
 
-| 文件            | 内容                                |
-| --------------- | ----------------------------------- |
+| 文件              | 内容                                |
+| ----------------- | ----------------------------------- |
 | `线上故障.md`   | 线上故障统计数据                    |
 | `需求统计.md`   | 需求统计数据                        |
 | `Sentry异常.md` | Sentry 异常统计（按分组输出小节）   |
@@ -180,61 +180,77 @@ echo "耗时: $(( $(python3 -c 'import time;print(int(time.time()*1000))') - _t0
 
 ```markdown
 # {项目名} - {date} — 线上故障
+
 {bugs 结果；未采集则填"（本次未采集）"}
 ```
 
 ```markdown
 # {项目名} - {date} — 需求统计
+
 {req 结果；未采集则填"（本次未采集）"}
 ```
 
 ```markdown
 # {项目名} - {date} — Sentry
 
-### {分组名}
+## {分组名}
 {该分组的 Sentry 统计结果}
+
+## {another-group}
+{another-group 的 SLS 统计结果}
 ```
 
 ```markdown
 # {项目名} - {date} — 接口高频统计
 
-### {name}
+## {name}
 {该 name 的 SLS 统计结果}
+
+## {another-name}
+{another-name 的 SLS 统计结果}
 ```
 
 ```markdown
 # {项目名} - {date} — slow log
 
-### {name}
+## {name}
 {该 name 的 slow log 统计结果}
+
+## {another-name}
+{another-name 的 slow log 统计结果}
 ```
 
 **异常处理**：
+
 - 若某类型数据获取失败，对应文件内容为"数据获取失败"
 - SLS 配置中若 `project` 或 `logstore` 为空，跳过该条目并输出 `⏭ 跳过: {name} (缺少必要配置)`
 - 如果某类型未在当前执行中被请求，则不生成对应文件
 
 ### Step 4: 生成汇总面板
 
-所有报告文件生成完毕后，在终端输出一个统一的汇总 Markdown 表格, 并将概览保存到：
+所有报告文件生成完毕后，输出一个统一的汇总 Markdown 表格, 并将概览保存到：
 
-`projects/{project}/QA/{YYYY-MM-DD}/Summary.md`
-
-
+`projects/{project}/QA/Summary.md` , 最新产生的在最上面, 同时间覆盖
 
 ```markdown
+# QA 信息
+
 ## 📊 {项目名} 日报汇总 — {date}
 
-| 数据源      | 窗口      | 状态 | 关键指标                              |
-| ----------- | --------- | ---- | ------------------------------------- |
-| 线上故障    | {range}   | ✅    | {N} 未解决 · 新建 {N} · 关闭 {N}      |
-| 需求统计    | {range}   | ✅    | 积压 {N} · 新建 {N} · 关闭 {N}        |
-| Sentry 异常 | {period}  | ✅    | {N} HIGH · 累计 {N} 事件              |
-| SLS 接口    | {days} 天 | ✅    | {name}({N} 接口) · ...                |
-| SQL 慢日志  | {days} 天 | ✅    | {N} 个 SQLHash · TOP1 {N}ms           |
+| 数据源      | 窗口      | 状态 | 关键指标                              | 访问|
+| ----------- | --------- | ---- | ------------------------------------- |--|
+| 线上故障    | {range}   | ✅    | {N} 未解决 · 新建 {N} · 关闭 {N}      | [线上故障](./{YYYY-MM-DD}/线上故障.md)|
+| 需求统计    | {range}   | ✅    | 积压 {N} · 新建 {N} · 关闭 {N}        | {链接地址} |
+| Sentry 异常 | {period}  | ✅    | {N} HIGH · 累计 {N} 事件              |{链接地址} |
+| SLS 接口    | {days} 天 | ✅    | {name}({N} 接口) · ...                |{链接地址} |
+| SQL 慢日志  | {days} 天 | ✅    | {N} 个 SQLHash · TOP1 {N}ms           |{链接地址} |
 
 > 报告路径: projects/{project}/QA/{YYYY-MM-DD}/
 > 成功: {N}/{N} | 跳过: {N} | 失败: {N}
+
+## 📊 {项目名} 日报汇总 — {former date}
+
+{former summary}
 ```
 
 > ⚠️ **窗口列必填。** 各数据源默认窗口并不一致（云效按 `range`、SLS/慢日志按 `days`、
@@ -313,6 +329,7 @@ ALIYUN_PROFILE: {profile}（sls/slow_log 门禁已通过）
 ```
 
 执行日志字段要求：
+
 - 每条查询记录**参数**（source_id, range, threshold, limit, profile 等）、**耗时**、**返回结果数**
 - 失败时记录**原始错误 + 分类结果 + 修复指引**三者，不要只写"失败"
 - 跳过时记录原因（如 "space_id 缺失"、"过滤条件无匹配条目"）
@@ -374,11 +391,11 @@ slow_log:
 
 **判空规则**
 
-| 模块 | 判定为「未配置、跳过」的条件 |
-| --- | --- |
-| `bugs` / `req` | 缺 `space_id` 或缺 `range` |
-| `sentry` | `sentry.groups` 缺失或为空 |
-| `sls` / `slow_log` | 列表为空；单条目缺 `project`/`logstore`（sls）或 `instance-id`（slow_log）则跳过该条目 |
+| 模块                   | 判定为「未配置、跳过」的条件                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------- |
+| `bugs` / `req`     | 缺`space_id` 或缺 `range`                                                               |
+| `sentry`             | `sentry.groups` 缺失或为空                                                                |
+| `sls` / `slow_log` | 列表为空；单条目缺`project`/`logstore`（sls）或 `instance-id`（slow_log）则跳过该条目 |
 
 > `test_repos` 由 `devops-yunxiao-testcase-*` 系列技能消费，**本技能不读取**。
 

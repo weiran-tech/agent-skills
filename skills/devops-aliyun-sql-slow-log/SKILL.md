@@ -2,7 +2,6 @@
 name: devops-aliyun-sql-slow-log
 description: 查询阿里云 RDS 数据库慢 SQL 并生成 Markdown 统计报告。按 SQLHash 分组聚合，支持最大耗时过滤、多表扫描分析、执行频率排行。当用户提到"慢SQL"、"慢查询"、"RDS 慢日志"、"数据库慢SQL"、"获取 slow log"时触发。
 ---
-
 # 阿里云 RDS 慢 SQL 统计
 
 基于帕累托分析法输出慢 SQL 排行榜，按 SQLHash 分组聚合统计，自动识别高频慢查询和全表扫描嫌疑语句。
@@ -29,13 +28,13 @@ export ALIYUN_PROFILE=<profile 名>
 
 失败时按错误分类给出修复指引：
 
-| 错误信息 | 含义 | 修复 |
-| --- | --- | --- |
-| `denied by sts or ram` / `NoPermission` | 凭证有效，无授权 | 补 `AliyunRDSReadOnlyAccess`，或授予 `rds:DescribeSlowLogRecords` |
-| `AccessKeyId not found` | AccessKey 已删除/轮换 | `aliyun configure --profile $ALIYUN_PROFILE` |
-| `InvalidAccessKeySecret` / `SignatureDoesNotMatch` | Secret 不匹配 | `aliyun configure --profile $ALIYUN_PROFILE` |
-| `InvalidDBInstanceId` / `NotFound` | 实例 ID 或 region 不对 | 核对 config.yaml |
-| plugin `not found` | rds 插件未装 | `aliyun plugin install --names aliyun-cli-rds && hash -r` |
+| 错误信息                                               | 含义                   | 修复                                                                 |
+| ------------------------------------------------------ | ---------------------- | -------------------------------------------------------------------- |
+| `denied by sts or ram` / `NoPermission`            | 凭证有效，无授权       | 补`AliyunRDSReadOnlyAccess`，或授予 `rds:DescribeSlowLogRecords` |
+| `AccessKeyId not found`                              | AccessKey 已删除/轮换  | `aliyun configure --profile $ALIYUN_PROFILE`                       |
+| `InvalidAccessKeySecret` / `SignatureDoesNotMatch` | Secret 不匹配          | `aliyun configure --profile $ALIYUN_PROFILE`                       |
+| `InvalidDBInstanceId` / `NotFound`                 | 实例 ID 或 region 不对 | 核对 config.yaml                                                     |
+| plugin`not found`                                    | rds 插件未装           | `aliyun plugin install --names aliyun-cli-rds && hash -r`          |
 
 > ⚠️ 校验失败时**不要重试、不要换 profile 试**，直接把上表对应的修复指引写进报告。
 
@@ -48,8 +47,8 @@ hash -r
 
 ## 命令参数
 
-| 参数                   | 必填 | 默认值          | 说明                              |
-| ---------------------- | ---- | --------------- | --------------------------------- |
+| 参数                     | 必填 | 默认值          | 说明                              |
+| ------------------------ | ---- | --------------- | --------------------------------- |
 | `--instance-id`        | 是   | -               | RDS 实例 ID                       |
 | `--region`             | 否   | cn-hangzhou     | 地域 ID                           |
 | `--db-name`            | 否   | -               | 数据库名过滤                      |
@@ -142,6 +141,7 @@ uv run .claude/skills/aliyun-sql-slow-log/scripts/stats.py analyze \
 ### 报告结构
 
 每个慢 SQLHash 详情需包含：
+
 1. **基本信息** — Hash、最大耗时、出现次数、累计执行、来源主机、时间范围
 2. **SQL 原文** — 截取前 200 字符（去除反引号）+ `...` 省略符
 3. **优化建议** — 根据 SQL 特征分析潜在问题，逐条列出可执行的优化方案
@@ -149,28 +149,28 @@ uv run .claude/skills/aliyun-sql-slow-log/scripts/stats.py analyze \
 
 #### 优化建议判定规则
 
-| SQL 特征 | 优化方向 |
-|---------|---------|
-| 多表 JOIN + COUNT + 扫描行数大 (>10万) | 建索引 / 引入缓存宽表预计算 |
-| WHERE 条件列无索引嫌疑 | 确认字段索引覆盖情况 |
-| SELECT * + 大数据量扫描 | 精确指定查询列 + LIMIT 控制 |
-| 锁等待时间长 (LockTimeMS > 0) | 排查长事务 / 行锁竞争 |
+| SQL 特征                                     | 优化方向                    |
+| -------------------------------------------- | --------------------------- |
+| 多表 JOIN + COUNT + 扫描行数大 (>10万)       | 建索引 / 引入缓存宽表预计算 |
+| WHERE 条件列无索引嫌疑                       | 确认字段索引覆盖情况        |
+| SELECT * + 大数据量扫描                      | 精确指定查询列 + LIMIT 控制 |
+| 锁等待时间长 (LockTimeMS > 0)                | 排查长事务 / 行锁竞争       |
 | 全表扫描 (ParseRowCounts >> ReturnRowCounts) | 添加 WHERE 过滤列的复合索引 |
 
 #### 优先级判定
 
-| 条件 | 级别 |
-|------|------|
-| 最大耗时 > 5s 或 累计执行 > 100 次且耗时 > 2s | 🔴 HIGH |
-| 最大耗时 > 1s 或 扫描行数 > 50万 | 🟡 MEDIUM |
-| 最大耗时 > 500ms 但未达 medium 标准 | 🟢 LOW |
+| 条件                                          | 级别      |
+| --------------------------------------------- | --------- |
+| 最大耗时 > 5s 或 累计执行 > 100 次且耗时 > 2s | 🔴 HIGH   |
+| 最大耗时 > 1s 或 扫描行数 > 50万              | 🟡 MEDIUM |
+| 最大耗时 > 500ms 但未达 medium 标准           | 🟢 LOW    |
 
 ### 报告模板
 
 完整的 Markdown 报告模板：
 
 ```markdown
-## {项目名} - {date}
+### {项目名}
 
 已采集：近 {days} 天共 {hash_count} 个 SQLHash 存在慢查询，TOP1 最大耗时 **{top_max_ms}ms**
 
@@ -200,5 +200,4 @@ uv run .claude/skills/aliyun-sql-slow-log/scripts/stats.py analyze \
 - **优先级判断:**
   - 🔴 HIGH: `{描述}`
   - 🟡 MEDIUM: `{描述}`
-
 ```
